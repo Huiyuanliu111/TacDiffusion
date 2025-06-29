@@ -60,16 +60,16 @@ class DETRVAE(nn.Module):
 
         else:
             # input_dim = 14 + 7 # robot_state + env_state
-            self.input_proj_robot_state = nn.Linear(36, hidden_dim)
-            self.input_proj_env_state = nn.Linear(36, hidden_dim)
+            self.input_proj_robot_state = nn.Linear(18, hidden_dim)
+            self.input_proj_env_state = nn.Linear(18, hidden_dim)
             self.pos = torch.nn.Embedding(2, hidden_dim)
             self.backbones = None
 
         # encoder extra parameters
         self.latent_dim = 32 # final size of latent z # TODO tune
         self.cls_embed = nn.Embedding(1, hidden_dim) # extra cls token embedding
-        self.encoder_action_proj = nn.Linear(6, hidden_dim) # project action to embedding
-        self.encoder_joint_proj = nn.Linear(36, hidden_dim)  # project qpos to embedding
+        self.encoder_action_proj = nn.Linear(6, hidden_dim)
+        self.encoder_joint_proj = nn.Linear(18, hidden_dim)  # project qpos to embedding (改为18维)
         self.latent_proj = nn.Linear(hidden_dim, self.latent_dim*2) # project hidden state to latent std, var
         self.register_buffer('pos_table', get_sinusoid_encoding_table(1+1+num_queries, hidden_dim)) # [CLS], qpos, a_seq
 
@@ -79,7 +79,7 @@ class DETRVAE(nn.Module):
 
     def forward(self, qpos, image, env_state, actions=None, is_pad=None):
         """
-        qpos: batch, 36
+        qpos: batch, 18
         image: batch, num_cam, channel, height, width
         env_state: None
         actions: batch, 6
@@ -175,7 +175,7 @@ def build_encoder(args):
 
 
 def build(args):
-    state_dim = 14 # TODO hardcode
+    state_dim = 18 # 更新为实际的状态维度
 
     # From state
     # backbone = None # from state for now, no need for conv nets

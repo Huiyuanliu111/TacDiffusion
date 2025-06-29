@@ -63,10 +63,10 @@ print(f"查询数量 (num_queries): {model.model.num_queries}")
 
 
 Model_save_name = "ACT.pth"
-#state_dataset = 'sensor_all.pkl'
-#action_dataset = 'action_FF_all.pkl'
-state_dataset = 'robot_state_train.pkl'
-action_dataset = 'robot_action_train.pkl'
+state_dataset = 'sensor_all.pkl'
+action_dataset = 'action_FF_all.pkl'
+#state_dataset = 'robot_state_train.pkl'
+#action_dataset = 'robot_action_train.pkl'
 
 # Load training and validation data
 tf = transforms.Compose([])
@@ -89,8 +89,6 @@ dataload_val = DataLoader(
     torch_data_val, batch_size=batch_size, shuffle=False, num_workers=0
 )
 
-x_shape = torch_data_train.state_all.shape[1]
-y_dim = torch_data_train.action_all.shape[1]
 
 
 
