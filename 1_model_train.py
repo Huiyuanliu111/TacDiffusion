@@ -63,6 +63,8 @@ print(f"查询数量 (num_queries): {model.model.num_queries}")
 
 
 Model_save_name = "ACT.pth"
+#state_dataset = 'sensor_all.pkl'
+#action_dataset = 'action_FF_all.pkl'
 state_dataset = 'robot_state_train.pkl'
 action_dataset = 'robot_action_train.pkl'
 
@@ -109,14 +111,12 @@ for ep in tqdm(range(n_epoch), desc="Epoch"):
 
     # Training loop
     pbar = tqdm(dataload_train)
-    for x_batch, y_batch in pbar:
+    for x_batch, y_batch, is_pad in pbar:
         x_batch = x_batch.type(torch.FloatTensor).to(device)
         y_batch = y_batch.type(torch.FloatTensor).to(device)
-        
+        is_pad = is_pad.type(torch.BoolTensor).to(device)
         # 创建空的图像tensor
         dummy_image = torch.zeros((x_batch.shape[0], 3, 224, 224)).to(device)  # 标准图像大小
-        # 创建is_pad mask，全False表示没有padding
-        is_pad = torch.zeros((x_batch.shape[0], model.model.num_queries), dtype=torch.bool).to(device)
         
         loss_dict = model(qpos=x_batch, image=dummy_image, actions=y_batch, is_pad=is_pad)
         loss = loss_dict['loss']  # 获取总loss

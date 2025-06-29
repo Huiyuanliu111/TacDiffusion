@@ -81,13 +81,19 @@ class RobotCustomDataset(Dataset):
         # Retrieve a sample from the dataset at the specified index
         state = self.state_all[index]
         action = self.action_all[index:index + self.num_queries]
-        if len(action) < 400:
+        
+        
+        is_pad = np.zeros(self.num_queries, dtype=bool)
+        
+        if len(action) < self.num_queries:
             # 如果剩余动作不足，用最后一个动作填充
             last_action = self.action_all[-1]
-            padding = np.tile(last_action, (400 - len(action), 1))
+            padding = np.tile(last_action, (self.num_queries - len(action), 1))
             action = np.vstack([action, padding])
+
+            is_pad[len(action) - len(padding):] = True
 
         if self.transform:
             # Apply any transformations to the state data
             state = self.transform(state)
-        return (state, action)
+        return (state, action, is_pad)
