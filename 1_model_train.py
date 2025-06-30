@@ -58,8 +58,8 @@ os.makedirs(SAVE_DATA_DIR, exist_ok=True)
 LOG_DIR = "logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 os.makedirs(LOG_DIR, exist_ok=True)
 
-n_epoch = 4000 
-lrate = 1e-3 
+n_epoch = 5000 
+lrate = 1e-5 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 n_hidden = 512 
 batch_size = 32 

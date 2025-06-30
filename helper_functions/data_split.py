@@ -23,8 +23,12 @@ class RobotCustomDataset(Dataset):
                 self.state_all = pickle.load(f)
             # Print the shape of the loaded state data
             print(f"Total epiosodes: {len(self.state_all)}") 
-            for i in range(3):
-                print(f"State Episode {i} has {self.state_all[i].shape} ")
+            filtered_states = []
+            for ep in self.state_all:
+                if 1000 <= len(ep) <= 2000:
+                    filtered_states.append(ep)
+            self.state_all = filtered_states
+            print(f"filtered state episodes: {len(self.state_all)}")
         except FileNotFoundError:
             print(f"Error: Pickle file '{pkl_file_path_state}' not found.")
         except Exception as e:
@@ -38,8 +42,12 @@ class RobotCustomDataset(Dataset):
             with open(pkl_file_path_action, 'rb') as f:
                 self.action_all = pickle.load(f)
             # Print the shape of the loaded action data 
-            for i in range(3):
-                print(f"Action Episode {i} has {self.action_all[i].shape} ")   
+            filtered_actions = []
+            for ep in self.action_all   :
+                if 1000 <= len(ep) <= 2000:
+                    filtered_actions.append(ep)
+            self.action_all = filtered_actions
+            print(f"filtered action episodes: {len(self.action_all)}")
         except FileNotFoundError:
             print(f"Error: Pickle file '{pkl_file_path_action}' not found.")
         except Exception as e:
