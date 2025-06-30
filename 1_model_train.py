@@ -12,12 +12,43 @@ from helper_functions.models import Model_Cond_Diffusion, Model_mlp_diff_embed
 from helper_functions.data_split import RobotCustomDataset
 from  act.policy import ACTPolicy
 
+# Checkpoint functions
+def save_checkpoint(model, optimizer, epoch, best_val_loss, global_step, checkpoint_dir):
+    """保存checkpoint"""
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'best_val_loss': best_val_loss,
+        'global_step': global_step
+    }
+    checkpoint_path = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
+    torch.save(checkpoint, checkpoint_path)
+    print(f"Checkpoint saved at epoch {epoch+1}")
+
+def load_checkpoint(model, optimizer, checkpoint_dir):
+    """加载checkpoint，返回起始epoch、最佳验证损失和global_step"""
+    checkpoint_path = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
+    if os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_val_loss = checkpoint['best_val_loss']
+        global_step = checkpoint['global_step']
+        print(f"Checkpoint loaded, resuming from epoch {start_epoch}")
+        return start_epoch, best_val_loss, global_step
+    else:
+        print("No checkpoint found, starting from scratch")
+        return 0, float('inf'), 1
+
 # 添加命令行参数
 sys.argv.extend(['--ckpt_dir', 'checkpoints',
                 '--policy_class', 'ACT',
                 '--task_name', 'tactile',
                 '--seed', '42',
-                '--num_epochs', '1500'])
+                '--num_epochs', '4000'])
 
 # Set paths and hyperparameters
 DATASET_PATH = "dataset"
@@ -27,7 +58,7 @@ os.makedirs(SAVE_DATA_DIR, exist_ok=True)
 LOG_DIR = "logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 os.makedirs(LOG_DIR, exist_ok=True)
 
-n_epoch = 1500 
+n_epoch = 4000 
 lrate = 1e-3 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 n_hidden = 512 
@@ -95,12 +126,15 @@ dataload_val = DataLoader(
 model.to(device)
 optim = torch.optim.Adam(model.parameters(), lr=lrate)
 
+# Checkpoint setup
+CHECKPOINT_DIR = "checkpoints"
+start_epoch, best_val_loss, global_step = load_checkpoint(model, optim, CHECKPOINT_DIR)
+
 # Set up TensorBoard logging
 writer = SummaryWriter(log_dir=LOG_DIR)
 
 # Main training loop
-global_step = 1  
-for ep in tqdm(range(n_epoch), desc="Epoch"):
+for ep in tqdm(range(start_epoch, n_epoch), desc="Epoch"):
 
     model.train()
 
@@ -131,16 +165,15 @@ for ep in tqdm(range(n_epoch), desc="Epoch"):
         model.eval()
         loss_val, n_batch_val = 0, 0
         with torch.no_grad():
-            for x_batch_val, y_batch_val in tqdm(dataload_val, desc="Validation_Loss"):
+            for x_batch_val, y_batch_val, is_pad_val in tqdm(dataload_val, desc="Validation_Loss"):
                 x_batch_val = x_batch_val.type(torch.FloatTensor).to(device)
                 y_batch_val = y_batch_val.type(torch.FloatTensor).to(device)
+                is_pad_val = is_pad_val.type(torch.BoolTensor).to(device)
                 
                 # 创建空的图像tensor
                 dummy_image = torch.zeros((x_batch_val.shape[0], 3, 224, 224)).to(device)
-                # 创建is_pad mask
-                is_pad = torch.zeros((x_batch_val.shape[0], model.model.num_queries), dtype=torch.bool).to(device)
                 
-                loss_dict = model(qpos=x_batch_val, image=dummy_image, actions=y_batch_val, is_pad=is_pad)
+                loss_dict = model(qpos=x_batch_val, image=dummy_image, actions=y_batch_val, is_pad=is_pad_val)
                 loss_val_inner = loss_dict['loss']
                 loss_val += loss_val_inner.detach().item()
                 n_batch_val += 1
@@ -148,6 +181,15 @@ for ep in tqdm(range(n_epoch), desc="Epoch"):
             avg_loss_val = loss_val / n_batch_val
             writer.add_scalar('validation_loss', avg_loss_val, global_step)
             tqdm.write(f"Epoch {ep+1}, validation loss: {avg_loss_val:.4f}")
+            
+            save_checkpoint(model, optim, ep, best_val_loss, global_step, CHECKPOINT_DIR)
+            
+            # Save best model
+            if avg_loss_val < best_val_loss:
+                best_val_loss = avg_loss_val
+                best_model_path = os.path.join(SAVE_DATA_DIR, f"best_{Model_save_name}")
+                torch.save(model.state_dict(), best_model_path)
+                print(f"New best model saved with validation loss: {best_val_loss:.4f}")
 
 # Close TensorBoard writer
 writer.close()
