@@ -65,7 +65,7 @@ n_hidden = 512
 batch_size = 32 
 n_T = 50
 net_type = "fc"
-drop_prob = 0.0
+drop_prob = 0.1
 train_prop = 0.80
 use_prev = True
 
@@ -79,8 +79,8 @@ args_override = {
     # 需要覆盖的模型参数
     'lr': lrate,
     'hidden_dim': n_hidden,
-    'kl_weight': 1.0,
-    'num_queries': 400
+    'kl_weight': 10.0,
+    'num_queries': 100
 }
 # Initialize the model and optimizer
 model = ACTPolicy(args_override)

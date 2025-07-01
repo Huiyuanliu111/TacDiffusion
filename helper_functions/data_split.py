@@ -20,12 +20,12 @@ class RobotCustomDataset(Dataset):
         # Load state data from the pickle file
         try:
             with open(pkl_file_path_state, 'rb') as f:
-                self.state_all = pickle.load(f)
+                self.state_all_list = pickle.load(f)
             # Print the shape of the loaded state data
-            print(f"Total epiosodes: {len(self.state_all)}") 
+            print(f"Total epiosodes: {len(self.state_all_list)}") 
             filtered_states = []
-            for ep in self.state_all:
-                if 1000 <= len(ep) <= 2000:
+            for ep in self.state_all_list:
+                if 2000 <= len(ep) <= 6000:
                     filtered_states.append(ep)
             self.state_all = filtered_states
             print(f"filtered state episodes: {len(self.state_all)}")
@@ -40,11 +40,11 @@ class RobotCustomDataset(Dataset):
         # Load action data from the pickle file
         try:
             with open(pkl_file_path_action, 'rb') as f:
-                self.action_all = pickle.load(f)
+                self.action_all_list = pickle.load(f)
             # Print the shape of the loaded action data 
             filtered_actions = []
-            for ep in self.action_all   :
-                if 1000 <= len(ep) <= 2000:
+            for ep in self.action_all_list:
+                if 2000 <= len(ep) <= 6000:
                     filtered_actions.append(ep)
             self.action_all = filtered_actions
             print(f"filtered action episodes: {len(self.action_all)}")
