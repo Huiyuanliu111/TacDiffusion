@@ -8,12 +8,13 @@ class RobotCustomDataset(Dataset):
     def __init__(
         self, DATASET_PATH, transform=None, data_usage="train", train_prop=0.80, 
         state_dataset='robot_state_training.pkl', action_dataset='robot_action_training.pkl',
-        num_queries=400  # 添加num_queries参数
+        num_queries=400, sample_ratio=1.0
     ):
         self.DATASET_PATH = DATASET_PATH
         # Optionally apply transformations to the data
         self.transform = transform
         self.num_queries = num_queries  # 保存num_queries
+        self.sample_ratio = sample_ratio
         # Construct the file path for the state dataset pickle file
         pkl_file_path_state = os.path.join(DATASET_PATH, state_dataset)
 
@@ -23,31 +24,18 @@ class RobotCustomDataset(Dataset):
                 self.state_all_list = pickle.load(f)
             # Print the shape of the loaded state data
             print(f"Total epiosodes: {len(self.state_all_list)}") 
-            filtered_states = []
-            for ep in self.state_all_list:
-                if 2000 <= len(ep) <= 6000:
-                    filtered_states.append(ep)
-            self.state_all = filtered_states
-            print(f"filtered state episodes: {len(self.state_all)}")
+
         except FileNotFoundError:
             print(f"Error: Pickle file '{pkl_file_path_state}' not found.")
         except Exception as e:
             print(f"Error: {e}")
 
-        # Construct the file path for the action dataset pickle file
         pkl_file_path_action = os.path.join(DATASET_PATH, action_dataset)
 
         # Load action data from the pickle file
         try:
             with open(pkl_file_path_action, 'rb') as f:
                 self.action_all_list = pickle.load(f)
-            # Print the shape of the loaded action data 
-            filtered_actions = []
-            for ep in self.action_all_list:
-                if 2000 <= len(ep) <= 6000:
-                    filtered_actions.append(ep)
-            self.action_all = filtered_actions
-            print(f"filtered action episodes: {len(self.action_all)}")
         except FileNotFoundError:
             print(f"Error: Pickle file '{pkl_file_path_action}' not found.")
         except Exception as e:
@@ -58,7 +46,7 @@ class RobotCustomDataset(Dataset):
 
         # Randomly split the data into train and validation sets
         state_train, state_valid, action_train, action_valid = train_test_split(
-            self.state_all, self.action_all, train_size=train_prop, random_state=random_seed
+            self.state_all_list, self.action_all_list, train_size=train_prop, random_state=random_seed
         )
 
         if data_usage == "train":
@@ -81,31 +69,79 @@ class RobotCustomDataset(Dataset):
         else:
             raise NotImplementedError
 
+        total_states = sum(len(ep) for ep in self.state_all)
+        total_actions = sum(len(ep) for ep in self.action_all)
+        state_dim = self.state_all[0][0].shape
+        action_dim = self.action_all[0][0].shape
+        
+        self.states_array = np.zeros((total_states,) + state_dim, dtype=np.float32)
+        self.actions_array = np.zeros((total_actions,) + action_dim, dtype=np.float32)
+        self.episode_indices = []
+        
+        state_idx = 0
+        action_idx = 0
+        
+        for state_ep, action_ep in zip(self.state_all, self.action_all):
+            state_start = state_idx
+            action_start = action_idx
+            
+            state_ep = np.array(state_ep)
+            self.states_array[state_idx:state_idx + len(state_ep)] = state_ep
+            state_idx += len(state_ep)
+            
+            action_ep = np.array(action_ep)
+            self.actions_array[action_idx:action_idx + len(action_ep)] = action_ep
+            action_idx += len(action_ep)
+            
+            self.episode_indices.append({
+                'state_start': state_start,
+                'state_end': state_idx,
+                'action_start': action_start,
+                'action_end': action_idx
+            })
+
+        if self.sample_ratio < 1.0:
+            total_samples = len(self.states_array)
+            num_samples = int(total_samples * self.sample_ratio)
+            self.sample_indices = np.random.choice(total_samples, num_samples, replace=False)
+            self.sample_indices.sort()
+        else:
+            self.sample_indices = np.arange(len(self.states_array))
+
     def __len__(self):
-        # Return the number of samples in the dataset
-        return len(self.state_all)
+        return len(self.sample_indices)
 
     def __getitem__(self, index):
-        # Retrieve a sample from the dataset at the specified index
-        state_episode = self.state_all[index]
-        action_episode = self.action_all[index]
-
-        time_step = np.random.randint(0, len(state_episode))
-        state = state_episode[time_step]
-        action = action_episode[time_step:time_step+self.num_queries]
+        actual_index = self.sample_indices[index]
+        state = self.states_array[actual_index]
         
-        is_pad = np.zeros(self.num_queries, dtype=bool)
+        episode_info = None
+        for ep_info in self.episode_indices:
+            if ep_info['state_start'] <= actual_index < ep_info['state_end']:
+                episode_info = ep_info
+                break
         
-        if len(action) < self.num_queries:
-            # 如果剩余动作不足，用当前episode的最后一个动作填充
-            original_length = len(action)
-            last_action = action_episode[-1]
-            num_padding = self.num_queries - len(action)
-            padding = np.tile(last_action, (num_padding, 1))
-            action = np.vstack([action, padding])
+        relative_pos = actual_index - episode_info['state_start']
+        action_start_idx = episode_info['action_start'] + relative_pos
+        action_end_in_episode = episode_info['action_end']
+        available_actions = action_end_in_episode - action_start_idx
+        
+        if available_actions >= self.num_queries:
+            action = self.actions_array[action_start_idx:action_start_idx + self.num_queries]
+            is_pad = np.zeros(self.num_queries, dtype=bool)
+        else:
+            action = np.zeros((self.num_queries,) + self.actions_array.shape[1:], dtype=self.actions_array.dtype)
+            is_pad = np.zeros(self.num_queries, dtype=bool)
             
-            # 标记填充的位置（从原始长度开始到结尾都是填充）
-            is_pad[original_length:] = True
+            if available_actions > 0:
+                action[:available_actions] = self.actions_array[action_start_idx:action_end_in_episode]
+                last_action = self.actions_array[action_end_in_episode - 1]
+                action[available_actions:] = last_action
+                is_pad[available_actions:] = True
+            else:
+                last_action = self.actions_array[action_end_in_episode - 1]
+                action[:] = last_action
+                is_pad[:] = True
 
         if self.transform:
             # Apply any transformations to the state data
