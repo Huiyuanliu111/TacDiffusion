@@ -9,6 +9,7 @@ import datetime
 import sys
 import multiprocessing
 import platform
+import json
 
 from helper_functions.models import Model_Cond_Diffusion, Model_mlp_diff_embed
 from helper_functions.data_split import RobotCustomDataset
@@ -45,44 +46,55 @@ def load_checkpoint(model, optimizer, checkpoint_dir):
         return 0, float('inf'), 1
     
 def get_args_override():
-    return {
-        'ckpt_dir': 'checkpoints',
-        'policy_class': 'ACT',
-        'task_name': 'tactile',
-        'seed': 42,
-        'num_epochs': 300,
-        'lr': 5e-5,
-        'hidden_dim': 512,
-        'kl_weight': 30.0,
-        'num_queries': 200,
-        'dropout': 0.1,
-    }
-
-def main():
+    return 
+def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, checkpoint_dir="checkpoints", patience=10):
     # Set paths and hyperparameters
     DATASET_PATH = "dataset"
-    SAVE_DATA_DIR = "output" 
+
+    sys.argv.extend(['--ckpt_dir', 'checkpoints',
+                    '--policy_class', 'ACT',
+                    '--task_name', 'tactile',
+                    '--seed', '42',
+                    '--num_epochs', '200',
+                    ])
+    # 为每组超参数创建独立的输出目录
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_name = f"wd{weight_decay:.1e}_kl{kl_weight:.1f}_dp{dropout:.3f}_{timestamp}"
+    
+    SAVE_DATA_DIR = os.path.join("output", run_name)
     os.makedirs(SAVE_DATA_DIR, exist_ok=True)
 
-    LOG_DIR = "logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    LOG_DIR = os.path.join("logs/fit", run_name)
     os.makedirs(LOG_DIR, exist_ok=True)
 
-    n_epoch = 300 
+    n_epoch = 200  # 修改为200轮
     lrate = 5e-5 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     n_hidden = 512 
     batch_size = 64
    
     train_prop = 0.80
-
     sample_ratio = 0.001  
+    num_queries = 200
 
-    args_override = get_args_override()
-    
+    args_override = {
+        'num_epochs': n_epoch,
+        'lr': lrate,
+        'hidden_dim': n_hidden,
+        'kl_weight': kl_weight,  # 使用传入的参数
+        'num_queries': num_queries,
+        'dropout': dropout,      # 使用传入的参数
+        "weight_decay": weight_decay,  # 使用传入的参数
+        'train_prop': train_prop,
+        'batch_size': batch_size
+    }
+
+
     model = ACTPolicy(args_override)
     print(f"num_queries: {model.model.num_queries}")
 
-    Model_save_name = "ACT.pth"
+    # 为每次运行创建独特的模型保存名称
+    Model_save_name = f"ACT_{run_name}.pth"
     state_dataset = 'sensor_all.pkl'
     action_dataset = 'action_FF_all.pkl'
 
@@ -91,30 +103,33 @@ def main():
     num_workers = 8
 
     torch_data_train = RobotCustomDataset(
-        DATASET_PATH, transform=tf, data_usage="train", train_prop=train_prop,
+        DATASET_PATH, transform=tf, data_usage="train", train_prop= args_override['train_prop'],
         state_dataset=state_dataset, action_dataset=action_dataset,
         num_queries=args_override['num_queries'], sample_ratio=sample_ratio
     )
     dataload_train = DataLoader(
-        torch_data_train, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True
+        torch_data_train, batch_size=args_override['batch_size'], shuffle=True, num_workers=num_workers, pin_memory=True
     )
 
     torch_data_val = RobotCustomDataset(
-        DATASET_PATH, transform=tf, data_usage="valid", train_prop=train_prop,
+        DATASET_PATH, transform=tf, data_usage="valid", train_prop=args_override['train_prop'],
         state_dataset=state_dataset, action_dataset=action_dataset, sample_ratio=sample_ratio,
         num_queries=args_override['num_queries']
     )
     dataload_val = DataLoader(
-        torch_data_val, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True
+        torch_data_val, batch_size=args_override['batch_size'], shuffle=False, num_workers=num_workers, pin_memory=True
     )
 
     model.to(device)
-    optim = torch.optim.Adam(model.parameters(), lr=lrate)
+    optim = torch.optim.Adam(model.parameters(), lr=args_override['lr'], weight_decay=weight_decay)
 
-    CHECKPOINT_DIR = "checkpoints"
-    start_epoch, best_val_loss, global_step = load_checkpoint(model, optim, CHECKPOINT_DIR)
+    start_epoch, best_val_loss, global_step = load_checkpoint(model, optim, checkpoint_dir)
 
     writer = SummaryWriter(log_dir=LOG_DIR)
+    
+    # 早停相关变量
+    patience_counter = 0
+    best_val_loss = float('inf')
 
     for ep in tqdm(range(start_epoch, n_epoch), desc="Epoch"):
         model.train()
@@ -159,20 +174,33 @@ def main():
                 best_val_loss = avg_loss_val
                 best_model_path = os.path.join(SAVE_DATA_DIR, f"best_{Model_save_name}")
                 torch.save(model.state_dict(), best_model_path)
-                print(f"New best model saved with validation loss: {best_val_loss:.4f}")
+                print(f"新的最佳模型已保存 - 验证损失: {best_val_loss:.4f}")
+                patience_counter = 0  # 重置patience计数器
+                
+                # 同时保存超参数配置
+                config_path = os.path.join(SAVE_DATA_DIR, "best_config.json")
+                with open(config_path, 'w') as f:
+                    json.dump(args_override, f, indent=4)
+            else:
+                patience_counter += 1
+                print(f"验证损失未改善，当前patience: {patience_counter}/{patience}")
+                
+            if patience_counter >= patience:
+                print(f"Early stopping 触发！{patience}个epoch内验证损失未改善")
+                break
 
-            save_checkpoint(model, optim, ep, best_val_loss, global_step, CHECKPOINT_DIR)
+            save_checkpoint(model, optim, ep, best_val_loss, global_step, checkpoint_dir)
 
     writer.close()
-    torch.save(model.state_dict(), os.path.join(SAVE_DATA_DIR, Model_save_name))
+    final_model_path = os.path.join(SAVE_DATA_DIR, Model_save_name)
+    torch.save(model.state_dict(), final_model_path)
+    print(f"\n训练完成！")
+    print(f"最终模型保存于: {final_model_path}")
+    print(f"最佳验证损失: {best_val_loss:.4f}")
+    return best_val_loss
 
 if __name__ == '__main__':
-    multiprocessing.freeze_support()  
-     # 添加命令行参数
-    sys.argv.extend(['--ckpt_dir', 'checkpoints',
-                    '--policy_class', 'ACT',
+    multiprocessing.freeze_support()
+    # 如果没有命令行参数，添加默认值
 
-                    '--task_name', 'tactile',
-                    '--seed', '42',
-                    '--num_epochs', '300'])
-    main()
+    train()
