@@ -47,16 +47,11 @@ def load_checkpoint(model, optimizer, checkpoint_dir):
     
 def get_args_override():
     return 
-def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, checkpoint_dir="checkpoints", patience=10):
+def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, sample_ratio=0.05,num_epochs=20, checkpoint_dir="checkpoints"):
     # Set paths and hyperparameters
     DATASET_PATH = "dataset"
 
-    sys.argv.extend(['--ckpt_dir', 'checkpoints',
-                    '--policy_class', 'ACT',
-                    '--task_name', 'tactile',
-                    '--seed', '42',
-                    '--num_epochs', '200',
-                    ])
+
     # 为每组超参数创建独立的输出目录
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_name = f"wd{weight_decay:.1e}_kl{kl_weight:.1f}_dp{dropout:.3f}_{timestamp}"
@@ -67,15 +62,17 @@ def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, checkpoint_dir="checkpoin
     LOG_DIR = os.path.join("logs/fit", run_name)
     os.makedirs(LOG_DIR, exist_ok=True)
 
-    n_epoch = 200  # 修改为200轮
+    n_epoch = num_epochs
     lrate = 5e-5 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     n_hidden = 512 
     batch_size = 64
    
     train_prop = 0.80
-    sample_ratio = 0.001  
+    sample_ratio = sample_ratio  
     num_queries = 200
+
+    patience = 10
 
     args_override = {
         'num_epochs': n_epoch,
@@ -129,7 +126,8 @@ def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, checkpoint_dir="checkpoin
     
     # 早停相关变量
     patience_counter = 0
-    best_val_loss = float('inf')
+    best_val_loss = float('inf') 
+
 
     for ep in tqdm(range(start_epoch, n_epoch), desc="Epoch"):
         model.train()
@@ -150,7 +148,11 @@ def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, checkpoint_dir="checkpoin
             writer.add_scalar('training_loss', loss.detach().item(), global_step)
             global_step += 1
             optim.step()
-        if ep % 5 == 0:
+
+
+        save_checkpoint(model, optim, ep, best_val_loss, global_step, checkpoint_dir)
+
+        if ep % 1  == 0:
             model.eval()
             loss_val, n_batch_val = 0, 0
             with torch.no_grad():
@@ -164,9 +166,10 @@ def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, checkpoint_dir="checkpoin
                     loss_val_inner = loss_dict['loss']
                     loss_val += loss_val_inner.detach().item()
                     n_batch_val += 1
+                    writer.add_scalar('validation_loss', loss_val_inner.detach().item(), global_step)
 
                 avg_loss_val = loss_val / n_batch_val
-                writer.add_scalar('validation_loss', avg_loss_val, global_step)
+
                 tqdm.write(f"Epoch {ep+1}, validation loss: {avg_loss_val:.4f}")
             
             
@@ -189,7 +192,7 @@ def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, checkpoint_dir="checkpoin
                 print(f"Early stopping 触发！{patience}个epoch内验证损失未改善")
                 break
 
-            save_checkpoint(model, optim, ep, best_val_loss, global_step, checkpoint_dir)
+
 
     writer.close()
     final_model_path = os.path.join(SAVE_DATA_DIR, Model_save_name)
