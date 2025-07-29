@@ -19,14 +19,15 @@
   高KL有助于正则化，减轻overfitting
   num_queries设置到和wallclock 1s接近的时间
   余弦退火调节lr
-  注意！数据的无偏性
 
 修改data_split.py
   用于action chunking提取多个时间步的数据
   将RobotCustomDataset模仿ACT的episodic dataset，包含多个episode。每次返回的是取样的episode内的随机时间点。
+  dataset normalization
 修改1_model_train.py
   action chunking
 修改2_model_trans
+  temporal aggregation
 
 ## 项目结构
 
@@ -38,7 +39,7 @@
 `visual_length.py` - 可视化episode length
 
 ## 使用方法
-运行`python 1_model_train.py`
+与TacDiffusion一致，从1到5地运行py文件
 
 
 
