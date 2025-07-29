@@ -16,21 +16,21 @@ from helper_functions.data_split import RobotCustomDataset
 from  act.policy import ACTPolicy
 
 # Checkpoint functions
-def save_checkpoint(model, optimizer, epoch, best_val_loss, global_step, checkpoint_dir):
+def save_checkpoint(model, optimizer, epoch, best_val_loss, global_step, checkpoint_dir, patience_counter):
     os.makedirs(checkpoint_dir, exist_ok=True)
     checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'best_val_loss': best_val_loss,
-        'global_step': global_step
+        'global_step': global_step,
+        'patience_counter': patience_counter
     }
     checkpoint_path = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
     torch.save(checkpoint, checkpoint_path)
     print(f"Checkpoint saved at epoch {epoch+1}")
 
 def load_checkpoint(model, optimizer, checkpoint_dir):
-
     checkpoint_path = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path)
@@ -39,18 +39,23 @@ def load_checkpoint(model, optimizer, checkpoint_dir):
         start_epoch = checkpoint['epoch'] + 1
         best_val_loss = checkpoint['best_val_loss']
         global_step = checkpoint['global_step']
+        patience_counter = checkpoint.get('patience_counter', 0)  # 兼容旧的checkpoint
         print(f"Checkpoint loaded, resuming from epoch {start_epoch}")
-        return start_epoch, best_val_loss, global_step
+        return start_epoch, best_val_loss, global_step, patience_counter
     else:
         print("No checkpoint found, starting from scratch")
-        return 0, float('inf'), 1
+        return 0, float('inf'), 1, 0
     
-def get_args_override():
-    return 
-def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, sample_ratio=0.05,num_epochs=20, checkpoint_dir="checkpoints"):
+
+def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epochs=20, checkpoint_dir="checkpoints", trial_id=None):
+    # 如果提供了trial_id，则更新hp_search_config
+    hp_config_path = "hp_search_config.json"
+    if trial_id is not None and os.path.exists(hp_config_path):
+        with open(hp_config_path, 'r') as f:
+            hp_config = json.load(f)
+    
     # Set paths and hyperparameters
     DATASET_PATH = "dataset"
-
 
     # 为每组超参数创建独立的输出目录
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -66,13 +71,15 @@ def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, sample_ratio=0.05,num_epo
     lrate = 5e-5 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     n_hidden = 512 
-    batch_size = 64
+    batch_size = 64  # 增加batch_size
+    
+
    
     train_prop = 0.80
     sample_ratio = sample_ratio  
     num_queries = 200
 
-    patience = 10
+    patience = 3
 
     args_override = {
         'num_epochs': n_epoch,
@@ -97,7 +104,7 @@ def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, sample_ratio=0.05,num_epo
 
     tf = transforms.Compose([])
 
-    num_workers = 8
+    num_workers = 16
 
     torch_data_train = RobotCustomDataset(
         DATASET_PATH, transform=tf, data_usage="train", train_prop= args_override['train_prop'],
@@ -105,7 +112,7 @@ def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, sample_ratio=0.05,num_epo
         num_queries=args_override['num_queries'], sample_ratio=sample_ratio
     )
     dataload_train = DataLoader(
-        torch_data_train, batch_size=args_override['batch_size'], shuffle=True, num_workers=num_workers, pin_memory=True
+        torch_data_train, batch_size=args_override['batch_size'], shuffle=True, num_workers=num_workers, pin_memory=True, prefetch_factor=2
     )
 
     torch_data_val = RobotCustomDataset(
@@ -114,20 +121,18 @@ def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, sample_ratio=0.05,num_epo
         num_queries=args_override['num_queries']
     )
     dataload_val = DataLoader(
-        torch_data_val, batch_size=args_override['batch_size'], shuffle=False, num_workers=num_workers, pin_memory=True
+        torch_data_val, batch_size=args_override['batch_size'], shuffle=False, num_workers=num_workers, pin_memory=True, prefetch_factor=2
     )
 
     model.to(device)
     optim = torch.optim.Adam(model.parameters(), lr=args_override['lr'], weight_decay=weight_decay)
 
-    start_epoch, best_val_loss, global_step = load_checkpoint(model, optim, checkpoint_dir)
+    start_epoch, best_val_loss, global_step, patience_counter = load_checkpoint(model, optim, checkpoint_dir)
 
     writer = SummaryWriter(log_dir=LOG_DIR)
     
     # 早停相关变量
-    patience_counter = 0
     best_val_loss = float('inf') 
-
 
     for ep in tqdm(range(start_epoch, n_epoch), desc="Epoch"):
         model.train()
@@ -149,8 +154,7 @@ def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, sample_ratio=0.05,num_epo
             global_step += 1
             optim.step()
 
-
-        save_checkpoint(model, optim, ep, best_val_loss, global_step, checkpoint_dir)
+        save_checkpoint(model, optim, ep, best_val_loss, global_step, checkpoint_dir, patience_counter)
 
         if ep % 1  == 0:
             model.eval()
@@ -166,9 +170,10 @@ def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, sample_ratio=0.05,num_epo
                     loss_val_inner = loss_dict['loss']
                     loss_val += loss_val_inner.detach().item()
                     n_batch_val += 1
-                    writer.add_scalar('validation_loss', loss_val_inner.detach().item(), global_step)
 
                 avg_loss_val = loss_val / n_batch_val
+                # 使用epoch数作为x轴，只记录每个epoch的平均验证损失
+                writer.add_scalar('validation_loss', avg_loss_val, ep)
 
                 tqdm.write(f"Epoch {ep+1}, validation loss: {avg_loss_val:.4f}")
             
@@ -182,8 +187,10 @@ def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, sample_ratio=0.05,num_epo
                 
                 # 同时保存超参数配置
                 config_path = os.path.join(SAVE_DATA_DIR, "best_config.json")
+                config_data = args_override.copy()
+                config_data['best_val_loss'] = best_val_loss
                 with open(config_path, 'w') as f:
-                    json.dump(args_override, f, indent=4)
+                    json.dump(config_data, f, indent=4)
             else:
                 patience_counter += 1
                 print(f"验证损失未改善，当前patience: {patience_counter}/{patience}")
@@ -200,10 +207,17 @@ def train(weight_decay=1e-5, kl_weight=1, dropout=0.1, sample_ratio=0.05,num_epo
     print(f"\n训练完成！")
     print(f"最终模型保存于: {final_model_path}")
     print(f"最佳验证损失: {best_val_loss:.4f}")
+
+    # 如果是超参数搜索的一部分，更新配置文件
+    if trial_id is not None and os.path.exists(hp_config_path):
+        hp_config[trial_id]["best_val_loss"] = float(best_val_loss)
+        with open(hp_config_path, 'w') as f:
+            json.dump(hp_config, f, indent=4)
+        
     return best_val_loss
 
 if __name__ == '__main__':
     multiprocessing.freeze_support()
-    # 如果没有命令行参数，添加默认值
+
 
     train()
