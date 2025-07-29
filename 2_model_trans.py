@@ -10,8 +10,6 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 def get_args_override():
     return {
         'ckpt_dir': 'checkpoints',
-        'policy_class': 'ACT',
-        'task_name': 'tactile',
         'seed': 42,
         'num_epochs': 300,
         'lr': 5e-5,
@@ -20,6 +18,7 @@ def get_args_override():
         'num_queries': 200,
         'dropout': 0.1,
     }
+
 def main():
     args_override = get_args_override()
 
@@ -56,10 +55,4 @@ def main():
 
 if __name__ == '__main__':
     multiprocessing.freeze_support()
-    # 添加命令行参数
-    sys.argv.extend(['--ckpt_dir', 'checkpoints',
-                    '--policy_class', 'ACT',
-                    '--task_name', 'tactile',
-                    '--seed', '42',
-                    '--num_epochs', '300'])
     main()
