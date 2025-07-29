@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import onnxruntime as ort
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 from torchvision import transforms
 from helper_functions.data_split import RobotCustomDataset
 from sklearn.metrics import mean_absolute_error, mean_squared_error
@@ -16,7 +17,7 @@ SAVE_FIGURE_DIR = "figures/ACT"
 FIGURE_ACTION_DIR = os.path.join(SAVE_FIGURE_DIR, "figures_action")
 FIGURE_state_DIR = os.path.join(SAVE_FIGURE_DIR, "figures_state")
 FIGURE_ERROR_DIR = os.path.join(SAVE_FIGURE_DIR, "figures_error")
-interval_length = 1000  # Reduced for testing - Length of valid data
+interval_length = 100  # Reduced for testing - Length of valid data
 
 temporal_agg = True  # 启用时间加权聚合
 query_frequency = 1  # 查询频率
@@ -69,6 +70,21 @@ sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_AL
 print("Loading ONNX model...")
 ort_session = ort.InferenceSession(model_name, sess_options)
 print("ONNX model loaded successfully!")
+
+# 打印模型的输入输出信息
+print("\nModel Input Info:")
+for i, input_info in enumerate(ort_session.get_inputs()):
+    print(f"Input {i}:")
+    print(f"  Name: {input_info.name}")
+    print(f"  Shape: {input_info.shape}")
+    print(f"  Type: {input_info.type}")
+
+print("\nModel Output Info:")
+for i, output_info in enumerate(ort_session.get_outputs()):
+    print(f"Output {i}:")
+    print(f"  Name: {output_info.name}")
+    print(f"  Shape: {output_info.shape}")
+    print(f"  Type: {output_info.type}")
 
 # Determine number of intervals in the dataset
 dim_validation = torch_data_test.state.shape[0]
@@ -133,15 +149,16 @@ for interval_idx in range(num_intervals):
 
     # Perform inference on each sample in the interval
     with torch.no_grad():
-        for i, idx in enumerate(idxs):
-            if i % 100 == 0:  # Print progress every 100 samples
-                print(f"    Processing sample {i}/{len(idxs)}")
+        # 使用tqdm创建进度条
+        for i, idx in tqdm(enumerate(idxs), total=len(idxs), desc=f"Interval {interval_idx + 1}", ncols=100):
             x_eval = torch.Tensor(torch_data_test.state[idx]).type(torch.FloatTensor).to(device)
             x_eval_ = x_eval.repeat(1, 1).cpu().numpy()
             
             # 执行推理
             if i % query_frequency == 0:
-                all_actions = ort_session.run(['output'], {'qpos': x_eval_})[0]
+                all_actions = ort_session.run(['output'], {
+                    'qpos': x_eval_
+                })[0]
                 all_actions = torch.from_numpy(all_actions[0])  # [sequence, action_dim]
             
             # 存储不使用temporal agg的直接预测结果
