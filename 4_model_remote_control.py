@@ -2,7 +2,8 @@ import socket
 import threading
 import time
 from helper_functions.DataBuffer_Class import DataBuffer
-import onnxruntime
+from act.temporal_agg import temporal_aggregation
+import onnxruntime as ort
 import torch
 import struct
 
@@ -35,6 +36,14 @@ def udp_model_receiver(ip_host, port_host, ip_target, port_target, device, ort_s
 
     send_count = 0  # Count the number of packets sent
 
+    # Initialize state for temporal aggregation
+    loop_counter = 0
+    # Pre-allocate a large tensor to store action history for aggregation
+    # The size is determined by max_steps, which is the number of steps before resetting the state
+    all_time_actions = torch.zeros((max_steps, max_steps + num_queries - 1, y_dim), device=device)
+    print("Initialized temporal aggregation state.")
+
+
     def receive_data():
         """
         Continuously receive data from the UDP socket, process it, and store it in the buffer.
@@ -62,6 +71,9 @@ def udp_model_receiver(ip_host, port_host, ip_target, port_target, device, ort_s
         Continuously process data from the buffer using the model and send it via UDP.
         """
         nonlocal send_count
+        nonlocal loop_counter
+        nonlocal all_time_actions
+
         while True:
             message = data_buffer.get_data()
             if message is not None:
@@ -69,10 +81,23 @@ def udp_model_receiver(ip_host, port_host, ip_target, port_target, device, ort_s
                 with torch.no_grad():
                     x_eval = torch.Tensor(message).type(torch.FloatTensor).to(device)
                     x_eval_ = x_eval.repeat(1, 1).cpu().numpy()
-                    y_pred_ = ort_session.run(['output'], {'input': x_eval_})[0]
+                    y_pred_ = ort_session.run(['output'], {'qpos': x_eval_})[0]
+                    y_pred_tensor = torch.from_numpy(y_pred_[0]).to(device)
+
+                    # Perform temporal aggregation
+                    raw_action = temporal_aggregation(
+                        loop_counter, y_pred_tensor, all_time_actions, num_queries, k
+                    )
+                
+                # Increment and reset counter to prevent overflow and memory leak
+                loop_counter += 1
+                if loop_counter >= max_steps:
+                    print("Max steps reached, resetting temporal aggregation state.")
+                    loop_counter = 0
+                    all_time_actions.zero_()
 
                 # Prepare data for sending
-                payload = y_pred_.flatten().tolist()
+                payload = raw_action.cpu().flatten().tolist()
                 counter = 0
                 format_str = "<6b" + str(len(payload)) + "f4b"  # Format string for struct packing
                 data_to_send = struct.pack(format_str, 127, 127, 127, 127, counter, len(payload) * 4, *payload, 126, 126, 126, 126)
@@ -108,32 +133,26 @@ def udp_model_receiver(ip_host, port_host, ip_target, port_target, device, ort_s
         udp_socket_send.close()
         udp_socket_receive.close()
 
-# Example usage
+# --- Temporal Aggregation Parameters ---
+num_queries = 200  # Action sequence length from the model, MUST match model output
+k = 0.01           # Exponential weight decay factor
+y_dim = 6          # Action dimension (e.g., Fx, Fy, Fz, Tx, Ty, Tz)
+max_steps = 5000   # Reset state after this many steps to prevent memory overflow
 
-model_size = 512
-model_train_timeslot = 7
-print(f'!!! Model: {model_size} - {model_train_timeslot}')
-
-if model_size == 128 and model_train_timeslot == 7:
-    model_name = 'output/TacDiffusion_model_128.onnx'
-elif model_size == 256 and model_train_timeslot == 7:
-    model_name = 'output/TacDiffusion_model_256.onnx'
-elif model_size == 512 and model_train_timeslot == 7:
-    model_name = 'output/TacDiffusion_model_512.onnx'
-elif model_size == 1024 and model_train_timeslot == 7:
-    model_name = 'output/TacDiffusion_model_1024.onnx'
-else:
-    raise ValueError('No suitable model found!')
-print(f'Model name: {model_name}')
+# --- Model and Network Configuration ---
+model_name = 'output/ACT.onnx'
 
 ip_host = "0.0.0.0"  # IP address of the model computer
 port_host = 1501
 
 ip_target = "10.157.175.246"  # IP address of the robot computer
 port_target = 2333
+model_train_timeslot = 7 # ms
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f'Device: {device}')
-ort_session = onnxruntime.InferenceSession(model_name)
+sess_options = ort.SessionOptions()
+sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+ort_session = ort.InferenceSession(model_name, sess_options)
 start_time = time.time()
 udp_model_receiver(ip_host, port_host, ip_target, port_target, device, ort_session, model_train_timeslot=model_train_timeslot)

@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 from torchvision import transforms
 from helper_functions.data_split import RobotCustomDataset
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from act.temporal_agg import temporal_aggregation
+
 
 # Set paths and directories
 DATASET_PATH = "dataset"
@@ -124,6 +126,7 @@ for interval_idx in range(num_intervals):
     idxs = range(start_idx, end_idx)
     y_pred = np.zeros((interval_length, 200, y_dim))  # Array to store prediction results with sequence dimension
     y_pred_no_temporal = np.zeros((interval_length, y_dim))  # 存储不使用temporal agg的预测结果
+    y_pred_temporal = np.zeros((interval_length, y_dim)) # 存储使用temporal agg的预测结果
 
     # 初始化时间动作矩阵
     all_time_actions = torch.zeros((interval_length, interval_length + num_queries - 1, y_dim))
@@ -148,24 +151,12 @@ for interval_idx in range(num_intervals):
             y_pred_no_temporal[i] = all_actions[0].numpy()
             
             if temporal_agg:
-                # 时间加权聚合
-                end_time_idx = min(i + num_queries, all_time_actions.shape[1])
-                seq_length = min(num_queries, end_time_idx - i)
-                all_time_actions[i, i:i+seq_length] = all_actions[:seq_length]
-                actions_for_curr_step = all_time_actions[:i+1, i]
-                actions_populated = torch.all(actions_for_curr_step != 0, dim=1)
-                actions_for_curr_step = actions_for_curr_step[actions_populated]
-                
-                if len(actions_for_curr_step) > 0:
-                    exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-                    exp_weights = exp_weights / exp_weights.sum()
-                    exp_weights = torch.from_numpy(exp_weights).unsqueeze(dim=1)
-                    raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
-                else:
-                    raw_action = all_actions[0:1]
+                raw_action = temporal_aggregation(i, all_actions, all_time_actions, num_queries, k)
             else:
                 raw_action = all_actions[0:1]
             
+            y_pred_temporal[i] = raw_action.cpu().numpy().squeeze(0)
+
             # 存储结果
             y_pred[i] = all_actions.numpy()  # 保存完整序列用于可视化
 
@@ -176,19 +167,18 @@ for interval_idx in range(num_intervals):
 
     # Calculate errors for the current interval
     y_true_interval = y_true_original[start_idx:end_idx]
-    y_pred_first_action = y_pred[:, 0, :]
 
     # 反标准化预测结果
     if hasattr(torch_data_test, 'denormalize_actions'):
-        y_pred_first_action_original = torch_data_test.denormalize_actions(y_pred_first_action)
+        y_pred_temporal_original = torch_data_test.denormalize_actions(y_pred_temporal)
         y_pred_no_temporal_original = torch_data_test.denormalize_actions(y_pred_no_temporal)
     else:
-        y_pred_first_action_original = y_pred_first_action
+        y_pred_temporal_original = y_pred_temporal
         y_pred_no_temporal_original = y_pred_no_temporal
 
     # 计算两种方法的误差
-    mae_temporal = mean_absolute_error(y_true_interval, y_pred_first_action_original)
-    rmse_temporal = np.sqrt(mean_squared_error(y_true_interval, y_pred_first_action_original))
+    mae_temporal = mean_absolute_error(y_true_interval, y_pred_temporal_original)
+    rmse_temporal = np.sqrt(mean_squared_error(y_true_interval, y_pred_temporal_original))
     
     mae_direct = mean_absolute_error(y_true_interval, y_pred_no_temporal_original)
     rmse_direct = np.sqrt(mean_squared_error(y_true_interval, y_pred_no_temporal_original))
@@ -206,7 +196,7 @@ for interval_idx in range(num_intervals):
 
     # Add to the lists for overall error calculation
     all_y_true.append(y_true_interval)
-    all_y_pred_temporal.append(y_pred_first_action_original)
+    all_y_pred_temporal.append(y_pred_temporal_original)
     all_y_pred_direct.append(y_pred_no_temporal_original)
     all_inference_speeds.append(inference_speeds)
 
@@ -216,7 +206,7 @@ for interval_idx in range(num_intervals):
     for i in range(6):
         row, col = divmod(i, 2)
         # Plot with temporal aggregation
-        axs[row, col].plot(y_pred_first_action_original[:, i], 
+        axs[row, col].plot(y_pred_temporal_original[:, i], 
                           label=f'{label_pred[i]} (Temporal)', 
                           linestyle='-', 
                           color='blue')
