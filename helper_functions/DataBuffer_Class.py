@@ -25,15 +25,14 @@ class DataBuffer:
         with self.lock:
             result = []
             # wait until there is data in the buffer
-            while len(self.buffer) < self.horizon_prev:  # wait for buffer to save at least horizon_prev data points
+            while len(self.buffer) < 1:  # wait for buffer to save at least horizon_prev data points
                 self.condition.wait(timeout=timeout)
 
             # get the data from the buffer
             try:
                 # get the latest data and the data from the previous moment
                 latest_data = self.buffer[-1][:self.sensor_size]
-                previous_data = self.buffer[-self.horizon_prev][:self.sensor_size]
-                result =  [latest_data + previous_data]
+                result =  latest_data
 
             except IndexError:
                 pass

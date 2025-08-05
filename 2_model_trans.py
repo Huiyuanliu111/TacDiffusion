@@ -27,7 +27,7 @@ def main():
     model = ACTPolicy(args_override).to(device)
 
     # 加载权重
-    model.load_state_dict(torch.load("output/best_ACT.pth", map_location=device))
+    model.load_state_dict(torch.load("ACT.pth", map_location=device))
     model.eval()
 
     # 定义 batch size
@@ -43,7 +43,7 @@ def main():
     torch.onnx.export(
         model,
         (dummy_qpos,dummy_image),
-        "output/ACT.onnx",
+        "ACT.onnx",
         input_names=input_names,
         output_names=output_names,
         dynamic_axes={
@@ -56,10 +56,4 @@ def main():
 
 if __name__ == '__main__':
     multiprocessing.freeze_support()
-    # 添加命令行参数
-    sys.argv.extend(['--ckpt_dir', 'checkpoints',
-                    '--policy_class', 'ACT',
-                    '--task_name', 'tactile',
-                    '--seed', '42',
-                    '--num_epochs', '300'])
     main()

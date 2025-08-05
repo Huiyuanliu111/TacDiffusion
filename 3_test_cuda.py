@@ -4,7 +4,7 @@ import time
 import xlsxwriter
 import numpy as np
 import pandas as pd
-import onnxruntime as ort
+
 import matplotlib.pyplot as plt
 from torchvision import transforms
 from helper_functions.data_split import RobotCustomDataset
@@ -18,7 +18,7 @@ SAVE_FIGURE_DIR = "figures/ACT"
 FIGURE_ACTION_DIR = os.path.join(SAVE_FIGURE_DIR, "figures_action")
 FIGURE_state_DIR = os.path.join(SAVE_FIGURE_DIR, "figures_state")
 FIGURE_ERROR_DIR = os.path.join(SAVE_FIGURE_DIR, "figures_error")
-interval_length = 100  # Reduced for testing - Length of valid data
+interval_length = 1000  # Reduced for testing - Length of valid data
 
 temporal_agg = True  # 启用时间加权聚合
 query_frequency = 1  # 查询频率
@@ -36,7 +36,7 @@ print(f'state_dataset: {state_dataset}')
 print(f'action_dataset: {action_dataset}')
 
 # Model file
-model_name = 'ACT.onnx'
+model_name = 'ACT.pth'
 print(f'model_name: {model_name}')
 
 # Load datasets
@@ -63,23 +63,46 @@ else:
 print(f'y_dim: {y_dim}')
 print('data import success!')
 
-# Enable graph optimization
-sess_options = ort.SessionOptions()
-sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+# Initialize and load PyTorch model
+print("Loading PyTorch model...")
+from act.policy import ACTPolicy
 
-# Create ONNX inference session
-print("Loading ONNX model...")
-ort_session = ort.InferenceSession(model_name, sess_options)
-print("ONNX model loaded successfully!")
+def get_args_override():
+    return {
+        'num_epochs': 300,
+        'lr': 5e-5,
+        'hidden_dim': 512,
+        'kl_weight': 30.0,
+        'num_queries': 200,
+        'dropout': 0.1,
+    }
 
-# Determine number of intervals in the dataset
+args_override = get_args_override()
+model = ACTPolicy(args_override).to(device)
+model.load_state_dict(torch.load(model_name, map_location=device))
+model.eval()
+print("PyTorch model loaded successfully!")
+
+# Determine number of intervals and valid starting positions
 dim_validation = torch_data_test.state.shape[0]
-max_intervals = dim_validation // interval_length
-num_intervals = min(3, max_intervals)  # Limit to 3 intervals for testing
+num_intervals = 3  # 固定处理3个区间
+interval_length = 100  # 每个区间的长度
+
+# 计算最大可能的起始位置（确保最后一个样本在有效范围内）
+max_start_position = dim_validation - (interval_length * num_intervals)
+if max_start_position < 0:
+    raise ValueError(f"数据集太小，无法处理{num_intervals}个长度为{interval_length}的区间")
+
+# 随机选择起始位置
+import random
+random.seed(42)  # 为了可重复性设置随机种子
+start_position = random.randint(0, max_start_position)
+
 print(f"Total validation samples: {dim_validation}")
-print(f"Max possible intervals: {max_intervals}")
-print(f"Number of intervals to process: {num_intervals} (limited for testing)")
+print(f"Random start position: {start_position}")
+print(f"Number of intervals to process: {num_intervals}")
 print(f"Interval length: {interval_length}")
+print(f"Last sample position will be: {start_position + (num_intervals * interval_length) - 1}")
 
 # Labels for predictions and ground truth
 label_pred = ['f_x_pred', 'f_y_pred', 'f_z_pred', 'tau_x_pred', 'tau_y_pred', 'tau_z_pred']
@@ -121,49 +144,85 @@ print("Starting inference loop...")
 # Iterate through intervals and perform inference
 for interval_idx in range(num_intervals):
     print(f"Processing interval {interval_idx + 1}/{num_intervals}")
-    start_idx = interval_idx * interval_length
+    start_idx = start_position + (interval_idx * interval_length)
     end_idx = start_idx + interval_length
     idxs = range(start_idx, end_idx)
-    y_pred = np.zeros((interval_length, 200, y_dim))  # Array to store prediction results with sequence dimension
-    y_pred_no_temporal = np.zeros((interval_length, y_dim))  # 存储不使用temporal agg的预测结果
-    y_pred_temporal = np.zeros((interval_length, y_dim)) # 存储使用temporal agg的预测结果
+    # 在GPU上创建存储张量
+    y_pred_gpu = torch.zeros((interval_length, 200, y_dim), device=device)  # 存储完整序列
+    y_pred_no_temporal_gpu = torch.zeros((interval_length, y_dim), device=device)  # 存储直接预测结果
+    y_pred_temporal_gpu = torch.zeros((interval_length, y_dim), device=device)  # 存储temporal agg结果
 
     # 初始化时间动作矩阵
     all_time_actions = torch.zeros((interval_length, interval_length + num_queries - 1, y_dim))
 
     start_time = time.time()
+    last_inference_time = start_time
     print(f"  Starting inference for {len(idxs)} samples...")
+    inference_times = []  # 存储每次推理的时间间隔
 
     # Perform inference on each sample in the interval
     with torch.no_grad():
         for i, idx in enumerate(idxs):
-            if i % 10 == 0:  # Print progress every 100 samples
-                print(f"    Processing sample {i}/{len(idxs)}")
-            x_eval = torch.Tensor(torch_data_test.state[idx]).type(torch.FloatTensor).to(device)
-            x_eval_ = x_eval.repeat(1, 1).cpu().numpy()
+            current_time = time.time()
+            
+            # 计算距离上次推理的时间间隔（毫秒）
+            if i > 0:  # 从第二个样本开始计算
+                interval = (current_time - last_inference_time) * 1000  # 转换为毫秒
+                inference_times.append(interval)
+                if i % 10 == 0:  # 每10个样本打印一次统计信息
+                    avg_interval = sum(inference_times[-10:]) / len(inference_times[-10:])
+                    print(f"    Sample {i}/{len(idxs)}, "
+                          f"Avg interval: {avg_interval:.2f}ms, "
+                          f"Frequency: {1000/avg_interval:.2f}Hz")
+            
+            last_inference_time = current_time
+            # 准备输入数据
+            qpos = torch.Tensor(torch_data_test.state[idx]).type(torch.FloatTensor).to(device)
+            qpos = qpos.unsqueeze(0)  # 添加batch维度 [1, state_dim]
+            
+            # 创建一个空的图像张量
+            dummy_image = torch.zeros((1, 3, 224, 224)).to(device)  # [1, 3, 224, 224]
             
             # 执行推理
             if i % query_frequency == 0:
-                all_actions = ort_session.run(['output'], {'qpos': x_eval_})[0]
-                all_actions = torch.from_numpy(all_actions[0])  # [sequence, action_dim]
+                all_actions = model(qpos, dummy_image)  # 传入两个必需的参数
+                all_actions = all_actions[0]  # [sequence, action_dim]
             
             # 存储不使用temporal agg的直接预测结果
-            y_pred_no_temporal[i] = all_actions[0].numpy()
-            
+            # 保持数据在GPU上进行处理
             if temporal_agg:
                 raw_action = temporal_aggregation(i, all_actions, all_time_actions, num_queries, k)
             else:
                 raw_action = all_actions[0:1]
             
-            y_pred_temporal[i] = raw_action.cpu().numpy().squeeze(0)
-
-            # 存储结果
-            y_pred[i] = all_actions.numpy()  # 保存完整序列用于可视化
+            # 存储所有预测结果在GPU上
+            y_pred_no_temporal_gpu[i] = all_actions[0]
+            y_pred_temporal_gpu[i] = raw_action.squeeze(0)
+            y_pred_gpu[i] = all_actions  # 保存完整序列用于可视化
 
     end_time = time.time()
     inference_time = end_time - start_time
     inference_speeds = interval_length / inference_time
-    print(f"Interval {interval_idx}: inference speeds: {inference_speeds} sample/second")
+    
+    # 计算统计信息
+    avg_interval = sum(inference_times) / len(inference_times)
+    min_interval = min(inference_times)
+    max_interval = max(inference_times)
+    std_interval = (sum((x - avg_interval) ** 2 for x in inference_times) / len(inference_times)) ** 0.5
+    
+    print(f"\nInterval {interval_idx + 1} Statistics:")
+    print(f"  Total samples: {interval_length}")
+    print(f"  Total time: {inference_time:.2f}s")
+    print(f"  Average speed: {inference_speeds:.2f} samples/second")
+    print(f"  Average interval: {avg_interval:.2f}ms (frequency: {1000/avg_interval:.2f}Hz)")
+    print(f"  Min interval: {min_interval:.2f}ms (max frequency: {1000/min_interval:.2f}Hz)")
+    print(f"  Max interval: {max_interval:.2f}ms (min frequency: {1000/max_interval:.2f}Hz)")
+    print(f"  Std dev interval: {std_interval:.2f}ms")
+
+    # 一次性将所有数据转移到CPU
+    y_pred = y_pred_gpu.cpu().numpy()
+    y_pred_no_temporal = y_pred_no_temporal_gpu.cpu().numpy()
+    y_pred_temporal = y_pred_temporal_gpu.cpu().numpy()
 
     # Calculate errors for the current interval
     y_true_interval = y_true_original[start_idx:end_idx]
