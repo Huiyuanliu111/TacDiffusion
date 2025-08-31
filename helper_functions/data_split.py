@@ -9,7 +9,7 @@ class RobotCustomDataset(Dataset):
         self, DATASET_PATH, transform=None, data_usage="train", train_prop=0.80, 
         state_dataset='robot_state_training.pkl', action_dataset='robot_action_training.pkl',
         num_queries=400, sample_ratio=1.0, maximum_length=12000, minimum_length=100,
-        normalize_data=True
+        normalize_data=True, num_obs=1000
     ):
         self.DATASET_PATH = DATASET_PATH
         # Optionally apply transformations to the data
@@ -19,6 +19,7 @@ class RobotCustomDataset(Dataset):
         self.maximum_length = maximum_length
         self.minimum_length = minimum_length
         self.normalize_data = normalize_data
+        self.num_obs = num_obs
         
         # Construct the file path for the state dataset pickle file
         pkl_file_path_state = os.path.join(DATASET_PATH, state_dataset)
@@ -208,37 +209,59 @@ class RobotCustomDataset(Dataset):
 
     def __getitem__(self, index):
         actual_index = self.sample_indices[index]
-        state = self.states_array[actual_index]
         
+        # Find episode info
         episode_info = None
         for ep_info in self.episode_indices:
             if ep_info['state_start'] <= actual_index < ep_info['state_end']:
                 episode_info = ep_info
                 break
         
+        # Calculate relative position in current episode
         relative_pos = actual_index - episode_info['state_start']
+        
+        # Initialize state sequence and its padding mask
+        state_seq = np.zeros((self.num_obs,) + self.states_array[0].shape, dtype=self.states_array.dtype)
+        state_pad = np.zeros(self.num_obs, dtype=bool)  # False means not padded
+        
+        # Fill in the current state
+        state_seq[-1] = self.states_array[actual_index]
+        
+        # Fill in historical states
+        for i in range(self.num_obs - 1):
+            history_idx = actual_index - (self.num_obs - 1 - i)
+            if history_idx >= episode_info['state_start']:
+                # If historical state exists in current episode
+                state_seq[i] = self.states_array[history_idx]
+            else:
+                # If historical state is before episode start, use padding
+                state_seq[i] = self.states_array[episode_info['state_start']]  # Use episode's first state as padding
+                state_pad[i] = True  # Mark as padded
+        
+        # Process actions (same as before)
         action_start_idx = episode_info['action_start'] + relative_pos
         action_end_in_episode = episode_info['action_end']
         available_actions = action_end_in_episode - action_start_idx
         
         if available_actions >= self.num_queries:
             action = self.actions_array[action_start_idx:action_start_idx + self.num_queries]
-            is_pad = np.zeros(self.num_queries, dtype=bool)
+            action_pad = np.zeros(self.num_queries, dtype=bool)
         else:
             action = np.zeros((self.num_queries,) + self.actions_array.shape[1:], dtype=self.actions_array.dtype)
-            is_pad = np.zeros(self.num_queries, dtype=bool)
+            action_pad = np.zeros(self.num_queries, dtype=bool)
             
             if available_actions > 0:
                 action[:available_actions] = self.actions_array[action_start_idx:action_end_in_episode]
                 last_action = self.actions_array[action_end_in_episode - 1]
                 action[available_actions:] = last_action
-                is_pad[available_actions:] = True
+                action_pad[available_actions:] = True
             else:
                 last_action = self.actions_array[action_end_in_episode - 1]
                 action[:] = last_action
-                is_pad[:] = True
+                action_pad[:] = True
 
         if self.transform:
-            # Apply any transformations to the state data
-            state = self.transform(state)
-        return (state, action, is_pad)
+            # Apply any transformations to the state sequence
+            state_seq = self.transform(state_seq)
+            
+        return (state_seq, action, state_pad, action_pad)

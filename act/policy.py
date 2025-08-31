@@ -20,26 +20,29 @@ class ACTPolicy(nn.Module):
         self.kl_weight = args_override['kl_weight']
         print(f'KL Weight {self.kl_weight}')
 
-    def __call__(self, qpos, image, actions=None, is_pad=None):
+    def __call__(self, qpos, image, actions=None, state_pad=None, actions_pad=None):
         env_state = None
         normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                          std=[0.229, 0.224, 0.225])
         image = normalize(image)
         if actions is not None: # training time
             actions = actions[:, :self.model.num_queries]
-            is_pad = is_pad[:, :self.model.num_queries]
+            actions_pad = actions_pad[:, :self.model.num_queries]
+            state_pad = state_pad[:, :self.model.num_obs]
 
-            a_hat, is_pad_hat, (mu, logvar) = self.model(qpos, image, env_state, actions, is_pad)
+            a_hat, is_pad_hat, (mu, logvar) = self.model(qpos, image, env_state, actions, actions_pad, state_pad)
             total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
             loss_dict = dict()
-            all_l1 = F.l1_loss(actions, a_hat, reduction='none')
-            l1 = (all_l1 * ~is_pad.unsqueeze(-1)).mean()
+            # Calculate L1 loss only on non-padded positions
+            all_l1 = F.l1_loss(actions, a_hat, reduction='none')  # [bs, num_queries, action_dim]
+            valid_mask = ~actions_pad  # [bs, num_queries]
+            l1 = (all_l1 * valid_mask.unsqueeze(-1)).mean()
             loss_dict['l1'] = l1
             loss_dict['kl'] = total_kld[0]
             loss_dict['loss'] = loss_dict['l1'] + loss_dict['kl'] * self.kl_weight
             return loss_dict
         else: # inference time
-            a_hat, _, (_, _) = self.model(qpos, image, env_state) # no action, sample from prior
+            a_hat, _, (_, _) = self.model(qpos, image, env_state, None, None, None) # no action, sample from prior
             return a_hat
 
     def configure_optimizers(self):
@@ -71,7 +74,7 @@ def get_args_parser():
     # * Transformer
     parser.add_argument('--enc_layers', default=4, type=int, # will be overridden
                         help="Number of encoding layers in the transformer")
-    parser.add_argument('--dec_layers', default=6, type=int, # will be overridden
+    parser.add_argument('--dec_layers', default=4, type=int, # will be overridden
                         help="Number of decoding layers in the transformer")
     parser.add_argument('--dim_feedforward', default=2048, type=int, # will be overridden
                         help="Intermediate size of the feedforward layers in the transformer blocks")
@@ -95,6 +98,8 @@ def get_args_parser():
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
     parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
     parser.add_argument('--temporal_agg', action='store_true')
+
+    parser.add_argument('--num_obs', action='store', type=int, default=1000,help='num of previous observations')
 
     return parser
 

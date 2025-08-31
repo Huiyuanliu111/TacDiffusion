@@ -45,11 +45,10 @@ events.out.tfevents.*
 
 # 忽略模型检查点
 checkpoints/
-*.pth
-*.onnx
+
+figures/TacDiffusion_model_512
 
 # 忽略输出目录
-output/
 *.pth
 
 # 忽略系统文件
@@ -63,14 +62,18 @@ desktop.ini
 *.swp
 *~
 
+*.onnx
+
 # 忽略Excel文件
 *.xlsx
 *.xls
 
 # 忽略图片文件
-*.png
 *.jpg
 *.jpeg
+*.png
 *.gif
 *.bmp
 *.tiff 
+startup_log.txt
+modify_checkpoint.py

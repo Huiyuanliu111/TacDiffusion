@@ -71,15 +71,17 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
     lrate = 5e-5 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     n_hidden = 512 
-    batch_size = 64  # 增加batch_size
+    batch_size = 4  # 减小batch_size以避免CUDA内存不足
     
 
+    num_workers = 16
    
     train_prop = 0.80
-    sample_ratio = sample_ratio  
+    sample_ratio = 0.001  
     num_queries = 200
-
+    num_obs = 500
     patience = 3
+
 
     args_override = {
         'num_epochs': n_epoch,
@@ -90,7 +92,9 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
         'dropout': dropout,      # 使用传入的参数
         "weight_decay": weight_decay,  # 使用传入的参数
         'train_prop': train_prop,
-        'batch_size': batch_size
+        'batch_size': batch_size,
+        'num_obs': num_obs,
+
     }
 
 
@@ -104,12 +108,12 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
 
     tf = transforms.Compose([])
 
-    num_workers = 16
 
     torch_data_train = RobotCustomDataset(
         DATASET_PATH, transform=tf, data_usage="train", train_prop= args_override['train_prop'],
         state_dataset=state_dataset, action_dataset=action_dataset,
-        num_queries=args_override['num_queries'], sample_ratio=sample_ratio
+        num_queries=args_override['num_queries'], sample_ratio=sample_ratio,
+        num_obs=args_override['num_obs']
     )
     dataload_train = DataLoader(
         torch_data_train, batch_size=args_override['batch_size'], shuffle=True, num_workers=num_workers, pin_memory=True, prefetch_factor=2
@@ -118,7 +122,7 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
     torch_data_val = RobotCustomDataset(
         DATASET_PATH, transform=tf, data_usage="valid", train_prop=args_override['train_prop'],
         state_dataset=state_dataset, action_dataset=action_dataset, sample_ratio=sample_ratio,
-        num_queries=args_override['num_queries']
+        num_queries=args_override['num_queries'], num_obs=args_override['num_obs']
     )
     dataload_val = DataLoader(
         torch_data_val, batch_size=args_override['batch_size'], shuffle=False, num_workers=num_workers, pin_memory=True, prefetch_factor=2
@@ -139,13 +143,14 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
         optim.param_groups[0]["lr"] = lrate * ((np.cos((ep / n_epoch) * np.pi) + 1) / 2)
 
         pbar = tqdm(dataload_train)
-        for x_batch, y_batch, is_pad in pbar:
+        for x_batch, y_batch, state_pad, actions_pad in pbar:
             x_batch = x_batch.type(torch.FloatTensor).to(device)
             y_batch = y_batch.type(torch.FloatTensor).to(device)
-            is_pad = is_pad.type(torch.BoolTensor).to(device)
+            state_pad = state_pad.type(torch.BoolTensor).to(device)
+            actions_pad = actions_pad.type(torch.BoolTensor).to(device)
             dummy_image = torch.zeros((x_batch.shape[0], 3, 224, 224)).to(device)
             
-            loss_dict = model(qpos=x_batch, image=dummy_image, actions=y_batch, is_pad=is_pad)
+            loss_dict = model(qpos=x_batch, image=dummy_image, actions=y_batch, state_pad=state_pad, actions_pad=actions_pad)
             loss = loss_dict['loss']
             optim.zero_grad()
             loss.backward()
@@ -160,13 +165,15 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
             model.eval()
             loss_val, n_batch_val = 0, 0
             with torch.no_grad():
-                for x_batch_val, y_batch_val, is_pad_val in tqdm(dataload_val, desc="Validation_Loss"):
+                for x_batch_val, y_batch_val, state_pad_val, actions_pad_val in tqdm(dataload_val, desc="Validation_Loss"):
                     x_batch_val = x_batch_val.type(torch.FloatTensor).to(device)
                     y_batch_val = y_batch_val.type(torch.FloatTensor).to(device)
-                    is_pad_val = is_pad_val.type(torch.BoolTensor).to(device)
+                    state_pad_val = state_pad_val.type(torch.BoolTensor).to(device)
+                    actions_pad_val = actions_pad_val.type(torch.BoolTensor).to(device)
                     dummy_image = torch.zeros((x_batch_val.shape[0], 3, 224, 224)).to(device)
                     
-                    loss_dict = model(qpos=x_batch_val, image=dummy_image, actions=y_batch_val, is_pad=is_pad_val)
+                    loss_dict = model(qpos=x_batch_val, image=dummy_image, actions=y_batch_val, 
+                                    state_pad=state_pad_val, actions_pad=actions_pad_val)
                     loss_val_inner = loss_dict['loss']
                     loss_val += loss_val_inner.detach().item()
                     n_batch_val += 1

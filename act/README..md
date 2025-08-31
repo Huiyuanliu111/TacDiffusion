@@ -1,6 +1,10 @@
 # 将ACT算法融入到本项目内
 
 ## 与原ACT项目的区别：
+加入前溯observations：
+  num_obs
+
+
 
 删除视觉部分（image, camera, backbone）
   删除CNNMLP的选项
@@ -39,7 +43,8 @@
 `visual_length.py` - 可视化episode length
 
 ## 使用方法
-与TacDiffusion一致，从1到5地运行py文件
+使用hp_search.py或者train.py训练模型
+
 
 
 
