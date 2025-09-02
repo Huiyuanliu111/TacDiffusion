@@ -74,9 +74,7 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
     n_hidden = 512 
     batch_size = 4  # 减小batch_size以避免CUDA内存不足
     
-
     num_workers = 16
-   
     train_prop = 0.80
     sample_ratio = 1  
     num_queries = 200
@@ -103,9 +101,10 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
     
     # 初始化wandb
     if use_wandb:
-        wandb_run_name = wandb_name if wandb_name else run_name
+        wandb_run_name = wandb_name
         wandb.init(
-            project=wandb_project,
+            project="act_tac",
+            entity="huiyuan_tac",
             name=wandb_run_name,
             config=args_override,
             tags=["ACT", "diffusion", "tactile"]
@@ -292,6 +291,5 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
 
 if __name__ == '__main__':
     multiprocessing.freeze_support()
-
 
     train()
