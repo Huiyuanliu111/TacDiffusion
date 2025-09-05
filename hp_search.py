@@ -70,6 +70,9 @@ def search(n_trials=4):
         print(f"dropout: {dropout:.3f}")
         print(f"sample_ratio: {sample_ratio:.3f}")
         try:
+            # 为每个trial创建唯一的wandb名称
+            wandb_name = f"trial_{trial}_wd{weight_decay:.1e}_kl{kl_weight:.1f}_dp{dropout:.3f}"
+            
             # 运行训练
             best_val_loss = train(
                 weight_decay=weight_decay,
@@ -77,7 +80,9 @@ def search(n_trials=4):
                 dropout=dropout,
                 sample_ratio=sample_ratio,
                 checkpoint_dir=checkpoint_dir,
-                num_epochs=num_epochs
+                num_epochs=num_epochs,
+                trial_id=trial,
+                wandb_name=wandb_name
             )
             
             # 更新试验状态

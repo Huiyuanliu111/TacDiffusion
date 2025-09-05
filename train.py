@@ -101,13 +101,14 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
     
     # 初始化wandb
     if use_wandb:
-        wandb_run_name = wandb_name
+        # 如果没有提供wandb_name，则使用run_name作为默认名称
+        wandb_run_name = wandb_name if wandb_name is not None else run_name
         wandb.init(
             project="act_tac",
             entity="huiyuan_tac",
             name=wandb_run_name,
             config=args_override,
-            tags=["ACT", "diffusion", "tactile"]
+            tags=["ACT", "diffusion", "tactile", f"trial_{trial_id}"] if trial_id is not None else ["ACT", "diffusion", "tactile"]
         )
         # 监视模型
         wandb.watch(model, log="all", log_freq=100)
