@@ -10,7 +10,7 @@ import multiprocessing
 import threading
 import time
 import torch
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # 创建线程锁用于更新配置文件
 config_lock = threading.Lock()
@@ -203,7 +203,7 @@ def search_multi_gpu(n_trials, max_gpus):
         # 使用线程池进行多GPU并行训练
         completed_trials = []
 
-    with ThreadPoolExecutor(max_workers=max_gpus) as executor:
+    with ProcessPoolExecutor(max_workers=max_gpus) as executor:
         # 提交初始任务
         future_to_trial = {}
         for i, trial_config in enumerate(remaining_trials[:max_gpus]):
