@@ -6,6 +6,9 @@ dataset/**/*
 # 忽略所有.pkl文件
 *.pkl
 
+
+nohup.out
+
 # 忽略所有.json文件
 *.json
 # 忽略Python相关文件
