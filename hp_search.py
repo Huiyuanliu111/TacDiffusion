@@ -12,6 +12,9 @@ import time
 import torch
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+# 设置多进程启动方法为spawn，以支持CUDA
+multiprocessing.set_start_method('spawn', force=True)
+
 # 创建线程锁用于更新配置文件
 config_lock = threading.Lock()
 
@@ -47,6 +50,12 @@ def load_or_create_trials_config(n_trials):
 
 def run_trial_on_gpu(trial_config, gpu_id, results_dir):
     """在指定GPU上运行单个试验"""
+    # 在子进程中设置CUDA设备
+    import torch
+    if torch.cuda.is_available():
+        torch.cuda.set_device(gpu_id)
+        print(f"[GPU {gpu_id}] 设置CUDA设备: {torch.cuda.get_device_name(gpu_id)}")
+    
     trial = trial_config['trial']
     weight_decay = trial_config['weight_decay']
     kl_weight = trial_config['kl_weight']
@@ -200,8 +209,8 @@ def search_multi_gpu(n_trials, max_gpus):
         print("所有试验已完成！")
         return
     
-        # 使用线程池进行多GPU并行训练
-        completed_trials = []
+    # 使用进程池进行多GPU并行训练
+    completed_trials = []
 
     with ProcessPoolExecutor(max_workers=max_gpus) as executor:
         # 提交初始任务
@@ -269,5 +278,14 @@ def search_multi_gpu(n_trials, max_gpus):
 
 
 if __name__ == "__main__":
-    # 使用多GPU并行训练，默认使用7个GPU进行7个试验
-    search_multi_gpu(n_trials=5, max_gpus=5)
+    # 确保在spawn模式下正确运行
+    try:
+        # 使用多GPU并行训练，默认使用5个GPU进行5个试验
+        search_multi_gpu(n_trials=5, max_gpus=5)
+    except RuntimeError as e:
+        if "spawn" in str(e).lower() or "cuda" in str(e).lower():
+            print("检测到CUDA多进程问题，正在重新设置...")
+            multiprocessing.set_start_method('spawn', force=True)
+            search_multi_gpu(n_trials=5, max_gpus=5)
+        else:
+            raise e

@@ -11,7 +11,6 @@ import multiprocessing
 import platform
 import json
 import wandb
-import wandb
 
 from helper_functions.models import Model_Cond_Diffusion, Model_mlp_diff_embed
 from helper_functions.data_split import RobotCustomDataset
@@ -88,10 +87,10 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
     n_hidden = 256
     batch_size = 64 # 进一步减小batch_size以避免CUDA内存不足
     
-    num_workers = 16
+    # 在多进程环境中减少DataLoader workers避免冲突
+    num_workers = 4 if gpu_id is not None else 16
     train_prop = 0.80
-    sample_ratio = 1  
-    sample_ratio = 1  
+    sample_ratio = sample_ratio
     num_queries = 200
     num_obs = 500
     patience = 3
@@ -127,13 +126,6 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
         # 监视模型
         wandb.watch(model, log="all", log_freq=100)
     print(f"num_queries: {model.model.num_queries}")
-    
-    # 在wandb中记录模型架构信息
-    if use_wandb:
-        wandb.config.update({
-            "model_num_queries": model.model.num_queries,
-            "model_type": "ACTPolicy"
-        })
     
     # 在wandb中记录模型架构信息
     if use_wandb:
@@ -207,16 +199,6 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
                     'global_step': global_step
                 }, step=global_step)
             
-            
-            # 记录到wandb
-            if use_wandb:
-                wandb.log({
-                    'train_loss': loss.detach().item(),
-                    'learning_rate': optim.param_groups[0]["lr"],
-                    'epoch': ep,
-                    'global_step': global_step
-                }, step=global_step)
-            
             global_step += 1
             optim.step()
 
@@ -249,13 +231,6 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
                         'val_loss': avg_loss_val,
                         'epoch': ep
                     }, step=global_step)
-                
-                # 记录到wandb
-                if use_wandb:
-                    wandb.log({
-                        'val_loss': avg_loss_val,
-                        'epoch': ep
-                    }, step=global_step)
 
                 tqdm.write(f"Epoch {ep+1}, validation loss: {avg_loss_val:.4f}")
             
@@ -266,17 +241,6 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
                 torch.save(model.state_dict(), best_model_path)
                 print(f"新的最佳模型已保存 - 验证损失: {best_val_loss:.4f}")
                 patience_counter = 0  # 重置patience计数器
-                
-                # 记录最佳模型到wandb
-                if use_wandb:
-                    wandb.log({
-                        'best_val_loss': best_val_loss,
-                        'best_model_epoch': ep
-                    })
-                    # 保存模型artifact
-                    artifact = wandb.Artifact(f'best_model_{wandb.run.id}', type='model')
-                    artifact.add_file(best_model_path)
-                    wandb.log_artifact(artifact)
                 
                 # 记录最佳模型到wandb
                 if use_wandb:
@@ -327,25 +291,6 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
         
         wandb.finish()
     
-    
-    # 记录最终结果到wandb
-    if use_wandb:
-        wandb.log({
-            'final_val_loss': best_val_loss,
-            'training_completed': True
-        })
-        # 保存最终模型artifact
-        final_artifact = wandb.Artifact(f'final_model_{wandb.run.id}', type='model')
-        final_artifact.add_file(final_model_path)
-        wandb.log_artifact(final_artifact)
-        
-        # 保存训练配置
-        config_artifact = wandb.Artifact(f'config_{wandb.run.id}', type='config')
-        config_artifact.add_file(os.path.join(SAVE_DATA_DIR, "best_config.json"))
-        wandb.log_artifact(config_artifact)
-        
-        wandb.finish()
-    
     print(f"\n训练完成！")
     print(f"最终模型保存于: {final_model_path}")
     print(f"最佳验证损失: {best_val_loss:.4f}")
@@ -360,5 +305,12 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
 
 if __name__ == '__main__':
     multiprocessing.freeze_support()
+    
+    # 确保多进程启动方法兼容性
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        # 如果已经设置过，则忽略
+        pass
 
     train()
