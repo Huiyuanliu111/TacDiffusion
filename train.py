@@ -110,8 +110,6 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
         'num_obs': num_obs,
         'sample_ratio': sample_ratio,
         'patience': patience
-        'sample_ratio': sample_ratio,
-        'patience': patience
     }
 
     model = ACTPolicy(args_override)
