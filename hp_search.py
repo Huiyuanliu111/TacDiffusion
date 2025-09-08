@@ -10,6 +10,11 @@ import multiprocessing
 import threading
 import time
 import torch
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# 创建线程锁用于更新配置文件
+config_lock = threading.Lock()
+
 
 def load_or_create_trials_config(n_trials):
     """加载或创建试验配置"""
@@ -23,13 +28,13 @@ def load_or_create_trials_config(n_trials):
     for trial in range(n_trials):
         trial_config = {
             'trial': trial,
-            'weight_decay': 10 ** random.uniform(-4, -3),
-            'kl_weight': random.uniform(1, 10.0),
-            'dropout': random.uniform(0.1, 0.2),
+            'weight_decay': 5 * 10 ** random.uniform(-4, -3),
+            'kl_weight': random.uniform(5, 15.0),
+            'dropout': 0.13,
             'completed': False,
             'best_val_loss': None,
-            'sample_ratio': 0.5,
-            'num_epochs': 10
+            'sample_ratio': 1,
+            'num_epochs': 20
         }
         trials_config.append(trial_config)
     
@@ -38,6 +43,7 @@ def load_or_create_trials_config(n_trials):
         json.dump(trials_config, f, indent=4)
     
     return trials_config
+
 
 def run_trial_on_gpu(trial_config, gpu_id, results_dir):
     """在指定GPU上运行单个试验"""
@@ -94,7 +100,74 @@ def run_trial_on_gpu(trial_config, gpu_id, results_dir):
         trial_config['error'] = str(e)
         return trial_config
 
-def search_multi_gpu(n_trials=7, max_gpus=7):
+
+def run_trial_on_cpu(trial_config, results_dir):
+    """在CPU上运行单个试验"""
+    trial = trial_config['trial']
+    weight_decay = trial_config['weight_decay']
+    kl_weight = trial_config['kl_weight']
+    dropout = trial_config['dropout']
+    sample_ratio = trial_config['sample_ratio']
+    num_epochs = trial_config['num_epochs']
+
+    # 为每次试验创建独立的目录结构
+    trial_dir = os.path.join(results_dir, f"trial_{trial}")
+    checkpoint_dir = os.path.join(trial_dir, "checkpoints")
+    os.makedirs(trial_dir, exist_ok=True)
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    print(f"\n试验 {trial + 1}")
+    print(f"超参数配置:")
+    print(f"weight_decay: {weight_decay:.6f}")
+    print(f"kl_weight: {kl_weight:.2f}")
+    print(f"dropout: {dropout:.3f}")
+    print(f"sample_ratio: {sample_ratio:.3f}")
+    
+    try:
+        # 为每个trial创建唯一的wandb名称
+        wandb_name = f"trial_{trial}_wd{weight_decay:.1e}_kl{kl_weight:.1f}_dp{dropout:.3f}"
+        
+        # 运行训练
+        best_val_loss = train(
+            weight_decay=weight_decay,
+            kl_weight=kl_weight,
+            dropout=dropout,
+            sample_ratio=sample_ratio,
+            checkpoint_dir=checkpoint_dir,
+            num_epochs=num_epochs,
+            trial_id=trial,
+            wandb_name=wandb_name
+        )
+
+        # 更新试验状态
+        trial_config['completed'] = True
+        trial_config['best_val_loss'] = float(best_val_loss)
+        
+        print(f"试验 {trial} 完成，验证损失: {best_val_loss:.4f}")
+        return trial_config
+        
+    except Exception as e:
+        print(f"试验 {trial} 失败，错误信息: {str(e)}")
+        trial_config['completed'] = False
+        trial_config['error'] = str(e)
+        return trial_config
+
+
+def update_config(trials_config, result):
+    """线程安全地更新配置文件"""
+    with config_lock:
+        # 更新试验配置
+        for i, t in enumerate(trials_config):
+            if t['trial'] == result['trial']:
+                trials_config[i] = result
+                break
+        
+        # 保存当前进度
+        with open("hp_search_config.json", 'w') as f:
+            json.dump(trials_config, f, indent=4)
+
+
+def search_multi_gpu(n_trials, max_gpus):
     """使用多GPU并行进行超参数搜索"""
     
     # 检查可用GPU数量
@@ -123,92 +196,18 @@ def search_multi_gpu(n_trials=7, max_gpus=7):
     
     print(f"\n总共 {n_trials} 个试验，还剩 {len(remaining_trials)} 个未完成")
     
-<<<<<<< HEAD
     if not remaining_trials:
         print("所有试验已完成！")
         return
     
-    # 如果没有GPU，回退到串行执行
-    if max_gpus == 0:
-        print("使用CPU串行执行...")
-        for trial_config in remaining_trials:
-            result = run_trial_on_gpu(trial_config, None, results_dir)
-            # 更新配置文件
-            for i, t in enumerate(trials_config):
-                if t['trial'] == result['trial']:
-                    trials_config[i] = result
-                    break
-=======
-    for trial_config in remaining_trials:
-        trial = trial_config['trial']
-        weight_decay = trial_config['weight_decay']
-        kl_weight = trial_config['kl_weight']
-        dropout = trial_config['dropout']
-        sample_ratio = trial_config['sample_ratio']
-        num_epochs = trial_config['num_epochs']
+        # 使用线程池进行多GPU并行训练
+        completed_trials = []
 
-        # 为每次试验创建独立的目录结构
-        trial_dir = os.path.join(results_dir, f"trial_{trial}")
-        checkpoint_dir = os.path.join(trial_dir, "checkpoints")
-        os.makedirs(trial_dir, exist_ok=True)
-        os.makedirs(checkpoint_dir, exist_ok=True)
-        
-        print(f"\n试验 {trial + 1}/{n_trials}")
-        print(f"超参数配置:")
-        print(f"weight_decay: {weight_decay:.6f}")
-        print(f"kl_weight: {kl_weight:.2f}")
-        print(f"dropout: {dropout:.3f}")
-        print(f"sample_ratio: {sample_ratio:.3f}")
-        try:
-            # 为每个trial创建唯一的wandb名称
-            wandb_name = f"trial_{trial}_wd{weight_decay:.1e}_kl{kl_weight:.1f}_dp{dropout:.3f}"
-            
-            # 运行训练
-            best_val_loss = train(
-                weight_decay=weight_decay,
-                kl_weight=kl_weight,
-                dropout=dropout,
-                sample_ratio=sample_ratio,
-                checkpoint_dir=checkpoint_dir,
-                num_epochs=num_epochs,
-                trial_id=trial,
-                wandb_name=wandb_name
-            )
->>>>>>> 748434970b06d393493126128782abd94b6414ab
-            
-            # 保存进度
-            with open("hp_search_config.json", 'w') as f:
-                json.dump(trials_config, f, indent=4)
-        return
-    
-    # 使用线程池进行多GPU并行训练
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    import threading
-    
-    # 创建线程锁用于更新配置文件
-    config_lock = threading.Lock()
-    
-    def update_config(result):
-        with config_lock:
-            # 更新试验配置
-            for i, t in enumerate(trials_config):
-                if t['trial'] == result['trial']:
-                    trials_config[i] = result
-                    break
-            
-            # 保存当前进度
-            with open("hp_search_config.json", 'w') as f:
-                json.dump(trials_config, f, indent=4)
-    
-    # 创建GPU任务队列
-    gpu_queue = list(range(max_gpus))
-    completed_trials = []
-    
     with ThreadPoolExecutor(max_workers=max_gpus) as executor:
         # 提交初始任务
         future_to_trial = {}
         for i, trial_config in enumerate(remaining_trials[:max_gpus]):
-            gpu_id = gpu_queue[i]
+            gpu_id = i
             future = executor.submit(run_trial_on_gpu, trial_config, gpu_id, results_dir)
             future_to_trial[future] = (trial_config, gpu_id)
         
@@ -222,7 +221,7 @@ def search_multi_gpu(n_trials=7, max_gpus=7):
             try:
                 result = future.result()
                 completed_trials.append(result)
-                update_config(result)
+                update_config(trials_config, result)
                 
                 print(f"\n[GPU {gpu_id}] 试验 {result['trial']} 完成")
                 if result['completed']:
@@ -241,13 +240,13 @@ def search_multi_gpu(n_trials=7, max_gpus=7):
                 future = executor.submit(run_trial_on_gpu, next_trial, gpu_id, results_dir)
                 future_to_trial[future] = (next_trial, gpu_id)
                 remaining_task_idx += 1
-    
+
     # 找到最佳配置
     completed_trials_list = [t for t in trials_config if t['completed']]
     if completed_trials_list:
         best_trial = min(completed_trials_list, key=lambda x: x['best_val_loss'])
         print("\n" + "="*50)
-        print("多GPU并行训练完成！")
+        print("超参数搜索完成！")
         print("="*50)
         print("最佳超参数配置:")
         print(f"  试验编号: {best_trial['trial']}")
@@ -255,21 +254,20 @@ def search_multi_gpu(n_trials=7, max_gpus=7):
         print(f"  kl_weight: {best_trial['kl_weight']:.2f}")
         print(f"  dropout: {best_trial['dropout']:.3f}")
         print(f"  最佳验证损失: {best_trial['best_val_loss']:.4f}")
-        print(f"  训练GPU: {best_trial.get('gpu_id', 'N/A')}")
+        if max_gpus > 0:
+            print(f"  训练GPU: {best_trial.get('gpu_id', 'N/A')}")
         print(f"  最佳模型保存在: {os.path.join(results_dir, 'trial_' + str(best_trial['trial']))}")
         
         # 显示所有完成试验的排名
         sorted_trials = sorted(completed_trials_list, key=lambda x: x['best_val_loss'])
         print("\n所有试验结果排名:")
         for i, trial in enumerate(sorted_trials):
-            print(f"  #{i+1}: 试验{trial['trial']} - 损失{trial['best_val_loss']:.4f} - GPU{trial.get('gpu_id', 'N/A')}")
+            gpu_info = f" - GPU{trial.get('gpu_id', 'CPU')}" if max_gpus > 0 else ""
+            print(f"  #{i+1}: 试验{trial['trial']} - 损失{trial['best_val_loss']:.4f}{gpu_info}")
     else:
         print("\n没有完成的试验")
 
-def search(n_trials=4):
-    """原始的串行超参数搜索函数，保持向后兼容"""
-    return search_multi_gpu(n_trials=n_trials, max_gpus=1)
 
 if __name__ == "__main__":
     # 使用多GPU并行训练，默认使用7个GPU进行7个试验
-    search_multi_gpu(n_trials=7, max_gpus=7) 
+    search_multi_gpu(n_trials=5, max_gpus=5)
