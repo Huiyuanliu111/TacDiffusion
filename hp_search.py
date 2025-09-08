@@ -123,6 +123,7 @@ def search_multi_gpu(n_trials=7, max_gpus=7):
     
     print(f"\n总共 {n_trials} 个试验，还剩 {len(remaining_trials)} 个未完成")
     
+<<<<<<< HEAD
     if not remaining_trials:
         print("所有试验已完成！")
         return
@@ -137,6 +138,43 @@ def search_multi_gpu(n_trials=7, max_gpus=7):
                 if t['trial'] == result['trial']:
                     trials_config[i] = result
                     break
+=======
+    for trial_config in remaining_trials:
+        trial = trial_config['trial']
+        weight_decay = trial_config['weight_decay']
+        kl_weight = trial_config['kl_weight']
+        dropout = trial_config['dropout']
+        sample_ratio = trial_config['sample_ratio']
+        num_epochs = trial_config['num_epochs']
+
+        # 为每次试验创建独立的目录结构
+        trial_dir = os.path.join(results_dir, f"trial_{trial}")
+        checkpoint_dir = os.path.join(trial_dir, "checkpoints")
+        os.makedirs(trial_dir, exist_ok=True)
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        
+        print(f"\n试验 {trial + 1}/{n_trials}")
+        print(f"超参数配置:")
+        print(f"weight_decay: {weight_decay:.6f}")
+        print(f"kl_weight: {kl_weight:.2f}")
+        print(f"dropout: {dropout:.3f}")
+        print(f"sample_ratio: {sample_ratio:.3f}")
+        try:
+            # 为每个trial创建唯一的wandb名称
+            wandb_name = f"trial_{trial}_wd{weight_decay:.1e}_kl{kl_weight:.1f}_dp{dropout:.3f}"
+            
+            # 运行训练
+            best_val_loss = train(
+                weight_decay=weight_decay,
+                kl_weight=kl_weight,
+                dropout=dropout,
+                sample_ratio=sample_ratio,
+                checkpoint_dir=checkpoint_dir,
+                num_epochs=num_epochs,
+                trial_id=trial,
+                wandb_name=wandb_name
+            )
+>>>>>>> 748434970b06d393493126128782abd94b6414ab
             
             # 保存进度
             with open("hp_search_config.json", 'w') as f:
