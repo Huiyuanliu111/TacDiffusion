@@ -48,7 +48,7 @@ def load_checkpoint(model, optimizer, checkpoint_dir):
         return 0, float('inf'), 1, 0
     
 
-def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epochs=20, checkpoint_dir="checkpoints", trial_id=None, use_wandb=True, wandb_project="act_tac", wandb_name=None, gpu_id=None):
+def train(num_queries=10, num_obs=100, weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epochs=20, checkpoint_dir="checkpoints", trial_id=None, use_wandb=True, wandb_project="act_tac", wandb_name=None, gpu_id=None):
     # 如果提供了trial_id，则更新hp_search_config
     hp_config_path = "hp_search_config.json"
     if trial_id is not None and os.path.exists(hp_config_path):
@@ -91,8 +91,8 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
     num_workers = 4 if gpu_id is not None else 16
     train_prop = 0.80
     sample_ratio = sample_ratio
-    num_queries = 200
-    num_obs = 500
+    num_queries = num_queries
+    num_obs = num_obs
     patience = 3
 
 

@@ -31,13 +31,15 @@ def load_or_create_trials_config(n_trials):
     for trial in range(n_trials):
         trial_config = {
             'trial': trial,
-            'weight_decay': 5 * 10 ** random.uniform(-4, -3),
-            'kl_weight': random.uniform(5, 15.0),
+            'weight_decay': random.uniform(1e-4, 5e-3),
+            'kl_weight': random.uniform(1, 15.0),
             'dropout': 0.13,
             'completed': False,
             'best_val_loss': None,
             'sample_ratio': 1,
-            'num_epochs': 20
+            'num_epochs': 20,
+            'num_queries': 5*random.randint(1, 10),
+            'num_obs': 5*random.randint(10, 60)
         }
         trials_config.append(trial_config)
     
@@ -62,6 +64,8 @@ def run_trial_on_gpu(trial_config, gpu_id, results_dir):
     dropout = trial_config['dropout']
     sample_ratio = trial_config['sample_ratio']
     num_epochs = trial_config['num_epochs']
+    num_queries = trial_config['num_queries']
+    num_obs = trial_config['num_obs']
     
     # 为每次试验创建独立的目录结构
     trial_dir = os.path.join(results_dir, f"trial_{trial}")
@@ -79,6 +83,8 @@ def run_trial_on_gpu(trial_config, gpu_id, results_dir):
     try:
         # 运行训练，指定GPU
         best_val_loss = train(
+            num_queries=num_queries,
+            num_obs=num_obs,
             weight_decay=weight_decay,
             kl_weight=kl_weight,
             dropout=dropout,
@@ -118,6 +124,8 @@ def run_trial_on_cpu(trial_config, results_dir):
     dropout = trial_config['dropout']
     sample_ratio = trial_config['sample_ratio']
     num_epochs = trial_config['num_epochs']
+    num_queries = trial_config['num_queries']
+    num_obs = trial_config['num_obs']
 
     # 为每次试验创建独立的目录结构
     trial_dir = os.path.join(results_dir, f"trial_{trial}")
@@ -138,6 +146,8 @@ def run_trial_on_cpu(trial_config, results_dir):
         
         # 运行训练
         best_val_loss = train(
+            num_queries=num_queries,
+            num_obs=num_obs,
             weight_decay=weight_decay,
             kl_weight=kl_weight,
             dropout=dropout,
@@ -281,11 +291,11 @@ if __name__ == "__main__":
     # 确保在spawn模式下正确运行
     try:
         # 使用多GPU并行训练，默认使用5个GPU进行5个试验
-        search_multi_gpu(n_trials=5, max_gpus=5)
+        search_multi_gpu(n_trials=20, max_gpus=5)
     except RuntimeError as e:
         if "spawn" in str(e).lower() or "cuda" in str(e).lower():
             print("检测到CUDA多进程问题，正在重新设置...")
             multiprocessing.set_start_method('spawn', force=True)
-            search_multi_gpu(n_trials=5, max_gpus=5)
+            search_multi_gpu(n_trials=20, max_gpus=5)
         else:
             raise e

@@ -49,6 +49,7 @@ class DETRVAE(nn.Module):
         self.transformer = transformer
         self.encoder = encoder
         hidden_dim = transformer.d_model
+        print(f"DETRVAE初始化: num_obs={num_obs}, num_queries={num_queries}")
         self.action_head = nn.Linear(hidden_dim, 6)
         self.is_pad_head = nn.Linear(hidden_dim, 1)
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
