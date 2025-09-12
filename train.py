@@ -202,7 +202,7 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
             global_step += 1
             optim.step()
 
-        save_checkpoint(model, optim, ep, best_val_loss, global_step, checkpoint_dir, patience_counter)
+        #save_checkpoint(model, optim, ep, best_val_loss, global_step, checkpoint_dir, patience_counter)
 
         if ep % 1  == 0:
             model.eval()
