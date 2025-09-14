@@ -14,7 +14,7 @@ import wandb
 
 from helper_functions.models import Model_Cond_Diffusion, Model_mlp_diff_embed
 from helper_functions.data_split import RobotCustomDataset
-from  act.policy import ACTPolicy
+from mamba.mamba_module import RoboM2T
 
 # Checkpoint functions
 def save_checkpoint(model, optimizer, epoch, best_val_loss, global_step, checkpoint_dir, patience_counter):
@@ -34,21 +34,25 @@ def save_checkpoint(model, optimizer, epoch, best_val_loss, global_step, checkpo
 def load_checkpoint(model, optimizer, checkpoint_dir):
     checkpoint_path = os.path.join(checkpoint_dir, 'latest_checkpoint.pth')
     if os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint['epoch'] + 1
-        best_val_loss = checkpoint['best_val_loss']
-        global_step = checkpoint['global_step']
-        patience_counter = checkpoint.get('patience_counter', 0)  # 兼容旧的checkpoint
-        print(f"Checkpoint loaded, resuming from epoch {start_epoch}")
-        return start_epoch, best_val_loss, global_step, patience_counter
+        try:
+            checkpoint = torch.load(checkpoint_path)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch'] + 1
+            best_val_loss = checkpoint['best_val_loss']
+            global_step = checkpoint['global_step']
+            patience_counter = checkpoint.get('patience_counter', 0)
+            print(f"Checkpoint loaded, resuming from epoch {start_epoch}")
+            return start_epoch, best_val_loss, global_step, patience_counter
+        except RuntimeError as e:
+            print("模型架构发生变化，无法加载旧的checkpoint，将从头开始训练")
+            return 0, float('inf'), 1, 0
     else:
         print("No checkpoint found, starting from scratch")
         return 0, float('inf'), 1, 0
     
 
-def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epochs=20, checkpoint_dir="checkpoints", trial_id=None, use_wandb=True, wandb_project="act_tac", wandb_name=None):
+def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.001, num_queries=10, num_obs=100, num_epochs=20, checkpoint_dir="checkpoints", trial_id=None, use_wandb=True, wandb_project="act_tac", wandb_name=None):
     # 如果提供了trial_id，则更新hp_search_config
     hp_config_path = "hp_search_config.json"
     if trial_id is not None and os.path.exists(hp_config_path):
@@ -76,9 +80,9 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
     
     num_workers = 16
     train_prop = 0.80
-    sample_ratio = 1  
-    num_queries = 200
-    num_obs = 500
+    sample_ratio = sample_ratio  
+    num_queries = num_queries
+    num_obs = num_obs
     patience = 3
 
 
@@ -97,7 +101,16 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
         'patience': patience
     }
 
-    model = ACTPolicy(args_override)
+
+    # 实例化RoboM2T模型
+    model = RoboM2T(
+        d_model=args_override['hidden_dim'],  # 使用hidden_dim作为模型维度
+        num_layers=6,  # 编码器和解码器的层数
+        d_state=16,    # Mamba状态空间维度（这是内部状态维度，不是输入维度）
+        nhead=8        # Cross Attention的头数
+    )
+    
+
     
     # 初始化wandb
     if use_wandb:
@@ -112,17 +125,19 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
         )
         # 监视模型
         wandb.watch(model, log="all", log_freq=100)
-    print(f"num_queries: {model.model.num_queries}")
     
     # 在wandb中记录模型架构信息
     if use_wandb:
         wandb.config.update({
-            "model_num_queries": model.model.num_queries,
-            "model_type": "ACTPolicy"
+            "model_num_queries": args_override['num_queries'],
+            "model_type": "RoboM2T",
+            "model_hidden_dim": args_override['hidden_dim'],
+            "model_num_layers": 6,
+            "model_nhead": 8
         })
 
     # 为每次运行创建独特的模型保存名称
-    Model_save_name = f"ACT_{run_name}.pth"
+    Model_save_name = f"RoboM2T_{run_name}.pth"
     state_dataset = 'sensor_all.pkl'
     action_dataset = 'action_FF_all.pkl'
 
@@ -168,10 +183,16 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
             y_batch = y_batch.type(torch.FloatTensor).to(device)
             state_pad = state_pad.type(torch.BoolTensor).to(device)
             actions_pad = actions_pad.type(torch.BoolTensor).to(device)
-            dummy_image = torch.zeros((x_batch.shape[0], 3, 224, 224)).to(device)
+            # 计算序列长度掩码
+            src_mask = ~state_pad  # 将padding mask转换为attention mask
             
-            loss_dict = model(qpos=x_batch, image=dummy_image, actions=y_batch, state_pad=state_pad, actions_pad=actions_pad)
-            loss = loss_dict['loss']
+            # 前向传播（使用除最后一个时间步外的动作作为目标输入）
+            pred_actions = model(src=x_batch, tgt=y_batch[:, :-1], pos=None)
+            
+            # 计算损失（MSE损失，只在非padding位置计算）
+            loss_mask = ~actions_pad[:, 1:]  # 移除第一个时间步的mask，因为我们预测从第二个时间步开始
+            mse_loss = torch.nn.functional.mse_loss(pred_actions[loss_mask], y_batch[:, 1:][loss_mask])
+            loss = mse_loss
             optim.zero_grad()
             loss.backward()
             pbar.set_description(f"train loss: {loss.detach().item():.4f}")
@@ -200,11 +221,18 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
                     y_batch_val = y_batch_val.type(torch.FloatTensor).to(device)
                     state_pad_val = state_pad_val.type(torch.BoolTensor).to(device)
                     actions_pad_val = actions_pad_val.type(torch.BoolTensor).to(device)
-                    dummy_image = torch.zeros((x_batch_val.shape[0], 3, 224, 224)).to(device)
+                    # 计算序列长度掩码
+                    src_mask = ~state_pad_val  # 将padding mask转换为attention mask
                     
-                    loss_dict = model(qpos=x_batch_val, image=dummy_image, actions=y_batch_val, 
-                                    state_pad=state_pad_val, actions_pad=actions_pad_val)
-                    loss_val_inner = loss_dict['loss']
+                    # 前向传播
+                    pred_actions = model(src=x_batch_val, tgt=y_batch_val[:, :-1], pos=None)
+                    
+                    # 计算损失
+                    loss_mask = ~actions_pad_val[:, 1:]
+                    loss_val_inner = torch.nn.functional.mse_loss(
+                        pred_actions[loss_mask], 
+                        y_batch_val[:, 1:][loss_mask]
+                    )
                     loss_val += loss_val_inner.detach().item()
                     n_batch_val += 1
 
@@ -293,4 +321,4 @@ def train(weight_decay=1e-4, kl_weight=1, dropout=0.1, sample_ratio=0.5, num_epo
 if __name__ == '__main__':
     multiprocessing.freeze_support()
 
-    train()
+    train(use_wandb=False, wandb_name="RoboM2T_test")
