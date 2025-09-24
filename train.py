@@ -85,10 +85,16 @@ def train(num_queries=10, num_obs=100, weight_decay=1e-4, kl_weight=1, dropout=0
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
     n_hidden = 256
-    batch_size = 64 # 进一步减小batch_size以避免CUDA内存不足
+    batch_size = 128 # 进一步减小batch_size以避免CUDA内存不足
     
-    # 在多进程环境中减少DataLoader workers避免冲突
-    num_workers = 4 if gpu_id is not None else 16
+    # 根据CPU利用率情况调整workers数量
+    # 如果CPU利用率已经100%，减少workers避免过载
+    if gpu_id is not None:
+        num_workers = 2  # GPU训练时使用较少workers，避免CPU过载
+        print(f"GPU训练模式：使用 {num_workers} 个数据加载进程（避免CPU过载）")
+    else:
+        num_workers = max(1, multiprocessing.cpu_count() // 4)  # CPU训练时也适当减少
+        print(f"CPU训练模式：使用 {num_workers} 个数据加载进程")
     train_prop = 0.80
     sample_ratio = sample_ratio
     num_queries = num_queries

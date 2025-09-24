@@ -28,20 +28,31 @@ def load_or_create_trials_config(n_trials):
     
     # 创建新的试验配置
     trials_config = []
-    for trial in range(n_trials):
-        trial_config = {
-            'trial': trial,
-            'weight_decay': random.uniform(1e-4, 5e-3),
-            'kl_weight': random.uniform(1, 15.0),
-            'dropout': 0.13,
-            'completed': False,
-            'best_val_loss': None,
-            'sample_ratio': 1,
-            'num_epochs': 20,
-            'num_queries': 5*random.randint(1, 10),
-            'num_obs': 5*random.randint(10, 60)
-        }
-        trials_config.append(trial_config)
+    
+    # 定义四组固定的num_obs和num_queries配置
+    fixed_configs = [
+        {'num_obs': 50, 'num_queries': 5},  # 第一组
+        {'num_obs': 200, 'num_queries': 5},  # 第二组
+        {'num_obs': 50, 'num_queries': 20},  # 第三组
+        {'num_obs': 400, 'num_queries': 20},  # 第四组
+    ]
+    
+    for i in range(n_trials//4):
+        for group_idx in range(4):
+            trial = i*4 + group_idx
+            trial_config = {
+                'trial': trial,
+                'num_epochs': 1,
+                'weight_decay': random.uniform(1e-4, 5e-3),
+                'kl_weight': random.randint(1, 15),
+                'dropout': 0.13,
+                'completed': False,
+                'best_val_loss': None,
+                'sample_ratio': 1,
+                'num_queries': fixed_configs[group_idx]['num_queries'],
+                'num_obs': fixed_configs[group_idx]['num_obs'],
+            }
+            trials_config.append(trial_config)
     
     # 保存配置
     with open(config_file, 'w') as f:
@@ -66,6 +77,7 @@ def run_trial_on_gpu(trial_config, gpu_id, results_dir):
     num_epochs = trial_config['num_epochs']
     num_queries = trial_config['num_queries']
     num_obs = trial_config['num_obs']
+    use_wandb = trial_config.get('use_wandb', True)  # 默认启用wandb
     
     # 为每次试验创建独立的目录结构
     trial_dir = os.path.join(results_dir, f"trial_{trial}")
@@ -92,7 +104,8 @@ def run_trial_on_gpu(trial_config, gpu_id, results_dir):
             checkpoint_dir=checkpoint_dir,
             num_epochs=num_epochs,
             gpu_id=gpu_id,  # 新增GPU参数
-            wandb_name=f"trial_{trial}_gpu{gpu_id}"  # 为每个试验设置唯一的wandb名称
+            wandb_name=f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_gpu{gpu_id}",
+            use_wandb=use_wandb  # 为每个试验设置唯一的wandb名称
         )
         
         # 更新试验状态
@@ -126,7 +139,7 @@ def run_trial_on_cpu(trial_config, results_dir):
     num_epochs = trial_config['num_epochs']
     num_queries = trial_config['num_queries']
     num_obs = trial_config['num_obs']
-
+    use_wandb = trial_config.get('use_wandb', True)  # 默认启用wandb
     # 为每次试验创建独立的目录结构
     trial_dir = os.path.join(results_dir, f"trial_{trial}")
     checkpoint_dir = os.path.join(trial_dir, "checkpoints")
@@ -155,7 +168,9 @@ def run_trial_on_cpu(trial_config, results_dir):
             checkpoint_dir=checkpoint_dir,
             num_epochs=num_epochs,
             trial_id=trial,
-            wandb_name=wandb_name
+            wandb_name=wandb_name,
+            use_wandb=use_wandb,
+            gpu_id=None
         )
 
         # 更新试验状态
@@ -225,40 +240,47 @@ def search_multi_gpu(n_trials, max_gpus):
     with ProcessPoolExecutor(max_workers=max_gpus) as executor:
         # 提交初始任务
         future_to_trial = {}
-        for i, trial_config in enumerate(remaining_trials[:max_gpus]):
+        remaining_task_idx = 0
+        
+        # 提交初始的max_gpus个任务
+        for i in range(min(max_gpus, len(remaining_trials))):
+            trial_config = remaining_trials[remaining_task_idx]
             gpu_id = i
             future = executor.submit(run_trial_on_gpu, trial_config, gpu_id, results_dir)
             future_to_trial[future] = (trial_config, gpu_id)
+            remaining_task_idx += 1
         
-        # 处理剩余任务
-        remaining_task_idx = max_gpus
-        
-        # 等待任务完成并分配新任务
-        for future in as_completed(future_to_trial):
-            trial_config, gpu_id = future_to_trial[future]
-            
-            try:
-                result = future.result()
-                completed_trials.append(result)
-                update_config(trials_config, result)
+        # 持续处理任务直到所有任务完成
+        while future_to_trial:
+            # 等待至少一个任务完成
+            for future in as_completed(future_to_trial):
+                trial_config, gpu_id = future_to_trial.pop(future)
                 
-                print(f"\n[GPU {gpu_id}] 试验 {result['trial']} 完成")
-                if result['completed']:
-                    print(f"[GPU {gpu_id}] 验证损失: {result['best_val_loss']:.4f}")
-                else:
-                    print(f"[GPU {gpu_id}] 试验失败")
+                try:
+                    result = future.result()
+                    completed_trials.append(result)
+                    update_config(trials_config, result)
+                    
+                    print(f"\n[GPU {gpu_id}] 试验 {result['trial']} 完成")
+                    if result['completed']:
+                        print(f"[GPU {gpu_id}] 验证损失: {result['best_val_loss']:.4f}")
+                    else:
+                        print(f"[GPU {gpu_id}] 试验失败")
+                    
+                except Exception as e:
+                    print(f"[GPU {gpu_id}] 执行试验时出错: {str(e)}")
                 
-            except Exception as e:
-                print(f"[GPU {gpu_id}] 执行试验时出错: {str(e)}")
-            
-            # 如果还有未完成的任务，分配给这个GPU
-            if remaining_task_idx < len(remaining_trials):
-                next_trial = remaining_trials[remaining_task_idx]
-                print(f"\n[GPU {gpu_id}] 开始新的试验 {next_trial['trial']}")
+                # 如果还有未完成的任务，分配给这个GPU
+                if remaining_task_idx < len(remaining_trials):
+                    next_trial = remaining_trials[remaining_task_idx]
+                    print(f"\n[GPU {gpu_id}] 开始新的试验 {next_trial['trial']}")
+                    
+                    new_future = executor.submit(run_trial_on_gpu, next_trial, gpu_id, results_dir)
+                    future_to_trial[new_future] = (next_trial, gpu_id)
+                    remaining_task_idx += 1
                 
-                future = executor.submit(run_trial_on_gpu, next_trial, gpu_id, results_dir)
-                future_to_trial[future] = (next_trial, gpu_id)
-                remaining_task_idx += 1
+                # 只处理一个完成的任务，然后重新开始as_completed循环
+                break
 
     # 找到最佳配置
     completed_trials_list = [t for t in trials_config if t['completed']]
@@ -296,6 +318,6 @@ if __name__ == "__main__":
         if "spawn" in str(e).lower() or "cuda" in str(e).lower():
             print("检测到CUDA多进程问题，正在重新设置...")
             multiprocessing.set_start_method('spawn', force=True)
-            search_multi_gpu(n_trials=20, max_gpus=5)
+            search_multi_gpu(n_trials=10, max_gpus=5)
         else:
             raise e
