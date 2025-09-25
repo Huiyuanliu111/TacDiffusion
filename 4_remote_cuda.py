@@ -88,10 +88,13 @@ def udp_model_receiver(ip_host, port_host, ip_target, port_target, device, model
             if message is not None:
                 # Process data using the model
                 with torch.no_grad():
+                    # 提取latest_data（前18维），忽略previous_data（后18维）
+                    full_data = torch.Tensor(message[0]).type(torch.FloatTensor).to(device)  # message[0]是36维数据
+                    latest_data = full_data[:18]  # 只要latest_data（前18维）
+                    
                     # 更新状态缓冲区（滑动窗口）
-                    current_state = torch.Tensor(message).type(torch.FloatTensor).to(device)
-                    state_buffer[:-1] = state_buffer[1:]  # 向左移动
-                    state_buffer[-1] = current_state      # 添加新状态
+                    state_buffer[:-1] = state_buffer[1:].clone()  # 向左移动
+                    state_buffer[-1] = latest_data      # 添加最新的18维状态
                     
                     # 准备模型输入：[batch_size, num_obs, state_dim]
                     qpos = state_buffer.unsqueeze(0)  # [1, num_obs, state_dim]
