@@ -4,6 +4,7 @@ import time
 import xlsxwriter
 import numpy as np
 import pandas as pd
+import json
 
 import matplotlib.pyplot as plt
 from torchvision import transforms
@@ -22,7 +23,7 @@ interval_length = 1000  # Reduced for testing - Length of valid data
 
 temporal_agg = True  # 启用时间加权聚合
 query_frequency = 1  # 查询频率
-num_queries = 200  # 序列长度
+# num_queries 将从配置文件中读取
 k = 0.01  
 
 # Set device: use GPU if available, otherwise use CPU
@@ -35,9 +36,11 @@ action_dataset = 'action_FF_all.pkl'
 print(f'state_dataset: {state_dataset}')
 print(f'action_dataset: {action_dataset}')
 
-# Model file
-model_name = 'ACT.pth'
+# Model file and config file
+model_name = 'best_8_group/group1_best_model.pth'
+config_file = 'best_8_group/group1_best_config.json'
 print(f'model_name: {model_name}')
+print(f'config_file: {config_file}')
 
 # Load datasets
 tf = transforms.Compose([])
@@ -67,18 +70,20 @@ print('data import success!')
 print("Loading PyTorch model...")
 from act.policy import ACTPolicy
 
-def get_args_override():
-    return {
-        'num_epochs': 300,
-        'lr': 5e-5,
-        'hidden_dim': 512,
-        'kl_weight': 30.0,
-        'num_queries': 200,
-        'dropout': 0.1,
-    }
+def load_config_from_json(config_path):
+    """从JSON文件加载配置"""
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    print(f"📂 从配置文件加载参数: {config_path}")
+    print(f"✅ 配置参数: {config}")
+    return config
 
-args_override = get_args_override()
-model = ACTPolicy(args_override).to(device)
+# 从JSON文件加载配置
+config = load_config_from_json(config_file)
+num_queries = config['num_queries']  # 从配置文件中获取 num_queries
+print(f"📝 使用配置中的 num_queries: {num_queries}")
+
+model = ACTPolicy(config).to(device)
 model.load_state_dict(torch.load(model_name, map_location=device))
 model.eval()
 print("PyTorch model loaded successfully!")
@@ -148,7 +153,7 @@ for interval_idx in range(num_intervals):
     end_idx = start_idx + interval_length
     idxs = range(start_idx, end_idx)
     # 在GPU上创建存储张量
-    y_pred_gpu = torch.zeros((interval_length, 200, y_dim), device=device)  # 存储完整序列
+    y_pred_gpu = torch.zeros((interval_length, num_queries, y_dim), device=device)  # 存储完整序列
     y_pred_no_temporal_gpu = torch.zeros((interval_length, y_dim), device=device)  # 存储直接预测结果
     y_pred_temporal_gpu = torch.zeros((interval_length, y_dim), device=device)  # 存储temporal agg结果
 
@@ -176,9 +181,23 @@ for interval_idx in range(num_intervals):
                           f"Frequency: {1000/avg_interval:.2f}Hz")
             
             last_inference_time = current_time
-            # 准备输入数据
-            qpos = torch.Tensor(torch_data_test.state[idx]).type(torch.FloatTensor).to(device)
-            qpos = qpos.unsqueeze(0)  # 添加batch维度 [1, state_dim]
+            # 准备输入数据 - 需要准备状态序列
+            # 获取从配置文件中读取的 num_obs
+            num_obs = config['num_obs']
+            
+            # 构建状态序列 [batch_size, num_obs, state_dim]
+            start_seq_idx = max(0, idx - num_obs + 1)  # 确保不超出边界
+            end_seq_idx = idx + 1
+            
+            # 如果序列不够长，用零填充前面部分
+            if end_seq_idx - start_seq_idx < num_obs:
+                pad_length = num_obs - (end_seq_idx - start_seq_idx)
+                state_seq = torch.zeros((num_obs, torch_data_test.state.shape[1]), dtype=torch.float32)
+                state_seq[pad_length:] = torch.Tensor(torch_data_test.state[start_seq_idx:end_seq_idx])
+            else:
+                state_seq = torch.Tensor(torch_data_test.state[start_seq_idx:end_seq_idx])
+            
+            qpos = state_seq.unsqueeze(0).to(device)  # 添加batch维度 [1, num_obs, state_dim]
             
             # 创建一个空的图像张量
             dummy_image = torch.zeros((1, 3, 224, 224)).to(device)  # [1, 3, 224, 224]

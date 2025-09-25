@@ -1,13 +1,14 @@
 import socket
 import threading
 import time
+import json
 from helper_functions.DataBuffer_Class import DataBuffer
 from act.temporal_agg import temporal_aggregation
 from act.policy import ACTPolicy
 import torch
 import struct
 
-def udp_model_receiver(ip_host, port_host, ip_target, port_target, device, model, model_train_timeslot=7):
+def udp_model_receiver(ip_host, port_host, ip_target, port_target, device, model, config, model_train_timeslot=7):
     """
     Function to receive data via UDP, process it with a model, and send the results back via UDP.
     
@@ -40,8 +41,15 @@ def udp_model_receiver(ip_host, port_host, ip_target, port_target, device, model
     loop_counter = 0
     # Pre-allocate a large tensor to store action history for aggregation
     # The size is determined by max_steps, which is the number of steps before resetting the state
+    num_queries = config['num_queries']
     all_time_actions = torch.zeros((max_steps, max_steps + num_queries - 1, y_dim), device=device)
     print("Initialized temporal aggregation state.")
+    
+    # Initialize state sequence buffer for model input
+    num_obs = config['num_obs']
+    state_dim = 18  # 假设状态维度为18，可以根据实际情况调整
+    state_buffer = torch.zeros((num_obs, state_dim), device=device)
+    print(f"Initialized state buffer with shape: {state_buffer.shape}")
 
 
     def receive_data():
@@ -73,14 +81,26 @@ def udp_model_receiver(ip_host, port_host, ip_target, port_target, device, model
         nonlocal send_count
         nonlocal loop_counter
         nonlocal all_time_actions
+        nonlocal state_buffer
 
         while True:
             message = data_buffer.get_data()
             if message is not None:
                 # Process data using the model
                 with torch.no_grad():
-                    x_eval = torch.Tensor(message).type(torch.FloatTensor).to(device)
-                    y_pred_ = model(x_eval)  
+                    # 更新状态缓冲区（滑动窗口）
+                    current_state = torch.Tensor(message).type(torch.FloatTensor).to(device)
+                    state_buffer[:-1] = state_buffer[1:]  # 向左移动
+                    state_buffer[-1] = current_state      # 添加新状态
+                    
+                    # 准备模型输入：[batch_size, num_obs, state_dim]
+                    qpos = state_buffer.unsqueeze(0)  # [1, num_obs, state_dim]
+                    
+                    # 创建虚拟图像输入
+                    dummy_image = torch.zeros((1, 3, 224, 224)).to(device)
+                    
+                    # 模型推理
+                    y_pred_ = model(qpos, dummy_image)  
                     y_pred_tensor = y_pred_[0]
 
                     # Perform temporal aggregation
@@ -94,6 +114,8 @@ def udp_model_receiver(ip_host, port_host, ip_target, port_target, device, model
                     print("Max steps reached, resetting temporal aggregation state.")
                     loop_counter = 0
                     all_time_actions.zero_()
+                    # 也重置状态缓冲区
+                    state_buffer.zero_()
 
                 # Prepare data for sending
                 payload = raw_action.cpu().flatten().tolist()
@@ -132,14 +154,31 @@ def udp_model_receiver(ip_host, port_host, ip_target, port_target, device, model
         udp_socket_send.close()
         udp_socket_receive.close()
 
+# --- 配置文件加载函数 ---
+def load_config_from_json(config_path):
+    """从JSON文件加载配置"""
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    print(f"📂 从配置文件加载参数: {config_path}")
+    print(f"✅ 配置参数: {config}")
+    return config
+
+# --- Model and Network Configuration ---
+model_name = 'best_8_group/group1_best_model.pth'
+config_file = 'best_8_group/group1_best_config.json'
+print(f'model_name: {model_name}')
+print(f'config_file: {config_file}')
+
+# 从JSON文件加载配置
+config = load_config_from_json(config_file)
+
 # --- Temporal Aggregation Parameters ---
-num_queries = 200  # Action sequence length from the model, MUST match model output
 k = 0.01           # Exponential weight decay factor
 y_dim = 6          # Action dimension (e.g., Fx, Fy, Fz, Tx, Ty, Tz)
 max_steps = 5000   # Reset state after this many steps to prevent memory overflow
 
-# --- Model and Network Configuration ---
-model_name = 'ACT.pth'
+print(f"📝 使用配置中的 num_queries: {config['num_queries']}")
+print(f"📝 使用配置中的 num_obs: {config['num_obs']}")
 
 ip_host = "0.0.0.0"  # IP address of the model computer
 port_host = 1501
@@ -152,24 +191,11 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f'Device: {device}')
 
 # Initialize model
-def get_args_override():
-    return {
-        'ckpt_dir': 'checkpoints',
-        'policy_class': 'ACT',
-        'task_name': 'tactile',
-        'seed': 42,
-        'num_epochs': 300,
-        'lr': 5e-5,
-        'hidden_dim': 512,
-        'kl_weight': 30.0,
-        'num_queries': 200,
-        'dropout': 0.1,
-    }
-
-args_override = get_args_override()
-model = ACTPolicy(args_override).to(device)
+print("Loading PyTorch model...")
+model = ACTPolicy(config).to(device)
 model.load_state_dict(torch.load(model_name, map_location=device))
 model.eval()
+print("PyTorch model loaded successfully!")
 
 start_time = time.time()
-udp_model_receiver(ip_host, port_host, ip_target, port_target, device, model, model_train_timeslot=model_train_timeslot)
+udp_model_receiver(ip_host, port_host, ip_target, port_target, device, model, config, model_train_timeslot=model_train_timeslot)
